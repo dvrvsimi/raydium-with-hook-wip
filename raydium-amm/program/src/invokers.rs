@@ -7,6 +7,50 @@ use solana_program::{
     pubkey::Pubkey,
 };
 use std::num::NonZeroU64;
+use spl_token_2022::extension::{
+    StateWithExtensions, transfer_hook::TransferHook,
+    StateWithExtensionsMut, transfer_hook_account::TransferHookAccount,
+};
+// use spl_transfer_hook_interface::instruction::TransferHookInstruction;
+use solana_program::program_pack::Pack;
+// use spl_transfer_hook_interface::state::ExtraAccountMetaList;
+
+// Hardcoded whitelist for demo (replace with on-chain registry for production)
+const HOOK_WHITELIST: &[Pubkey] = &[
+    // Add allowed hook program pubkeys here
+    Pubkey::new_from_array([
+        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+    ]), // TODO: convert base64 to pubkey
+    
+];
+
+/// Helper to get the transfer hook program id from a mint's TLV extension
+fn get_transfer_hook_program_id(mint_account: &AccountInfo) -> Option<Pubkey> {
+    let data = mint_account.data.borrow();
+    let state = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data).ok()?;
+    let ext = state.get_extension::<TransferHook>().ok()?;
+    Some(ext.program_id)
+}
+
+/// Set and unset the transferring flag for a token account
+fn set_transferring(account: &AccountInfo) -> Result<(), ProgramError> {
+    let mut data = account.data.borrow_mut();
+    let mut state = StateWithExtensionsMut::<spl_token_2022::state::Account>::unpack(&mut data)?;
+    let ext = state.get_extension_mut::<TransferHookAccount>()?;
+    ext.transferring = true.into();
+    Ok(())
+}
+
+fn unset_transferring(account: &AccountInfo) -> Result<(), ProgramError> {
+    let mut data = account.data.borrow_mut();
+    let mut state = StateWithExtensionsMut::<spl_token_2022::state::Account>::unpack(&mut data)?;
+    let ext = state.get_extension_mut::<TransferHookAccount>()?;
+    ext.transferring = false.into();
+    Ok(())
+}
 
 pub struct Invokers {}
 
@@ -154,7 +198,63 @@ impl Invokers {
         destination: AccountInfo<'a>,
         owner: AccountInfo<'a>,
         deposit_amount: u64,
+        mint: AccountInfo<'a>,
+        remaining_accounts: &[AccountInfo<'a>],
     ) -> Result<(), ProgramError> {
+        if let Some(hook_program_id) = get_transfer_hook_program_id(&mint) {
+            if !HOOK_WHITELIST.contains(&hook_program_id) {
+                return Err(ProgramError::Custom(1234)); // Use a real error code
+            }
+            // Set transferring flag (ignore error if not present)
+            let _ = set_transferring(&source);
+            let hook_ix_data = TransferHookInstruction::Execute {
+                amount: deposit_amount,
+            }
+            .pack();
+            let (extra_account_meta_list_pda, _bump) = Pubkey::find_program_address(
+                &[b"extra-account-metas", mint.key.as_ref()],
+                &hook_program_id,
+            );
+            let mut account_metas = vec![
+                AccountMeta::new(*source.key, false),
+                AccountMeta::new(*mint.key, false),
+                AccountMeta::new(*destination.key, false),
+                AccountMeta::new(*owner.key, false),
+                AccountMeta::new(extra_account_meta_list_pda, false),
+            ];
+            let mut account_infos = vec![
+                source.clone(),
+                mint.clone(),
+                destination.clone(),
+                owner.clone(),
+            ];
+            // Find the ExtraAccountMetaList AccountInfo in remaining_accounts
+            let extra_account_meta_list_info = remaining_accounts.iter().find(|ai| ai.key == &extra_account_meta_list_pda)
+                .ok_or(ProgramError::NotEnoughAccountKeys)?;
+            account_infos.push(extra_account_meta_list_info.clone());
+            // Parse the ExtraAccountMetaList
+            let meta_list_data = extra_account_meta_list_info.try_borrow_data()?;
+            let extra_account_meta_list = ExtraAccountMetaList::unpack(&meta_list_data)?;
+            // Add extra accounts in order
+            let mut extra_account_index = 0;
+            for meta in extra_account_meta_list.iter() {
+                let acc_info = remaining_accounts.get(extra_account_index)
+                    .ok_or(ProgramError::NotEnoughAccountKeys)?;
+                account_metas.push(meta.to_account_meta());
+                account_infos.push(acc_info.clone());
+                extra_account_index += 1;
+            }
+            let hook_ix = Instruction {
+                program_id: hook_program_id,
+                accounts: account_metas,
+                data: hook_ix_data,
+            };
+            solana_program::program::invoke(
+                &hook_ix,
+                &account_infos,
+            )?;
+            let _ = unset_transferring(&source);
+        }
         let ix = spl_token::instruction::transfer(
             token_program.key,
             source.key,
@@ -179,9 +279,64 @@ impl Invokers {
         amm_seed: &[u8],
         nonce: u8,
         amount: u64,
+        mint: AccountInfo<'a>,
+        remaining_accounts: &[AccountInfo<'a>],
     ) -> Result<(), ProgramError> {
         let authority_signature_seeds = [amm_seed, &[nonce]];
         let signers = &[&authority_signature_seeds[..]];
+        if let Some(hook_program_id) = get_transfer_hook_program_id(&mint) {
+            if !HOOK_WHITELIST.contains(&hook_program_id) {
+                return Err(ProgramError::Custom(1234));
+            }
+            let _ = set_transferring(&source);
+            let hook_ix_data = TransferHookInstruction::Execute {
+                amount,
+            }
+            .pack();
+            let (extra_account_meta_list_pda, _bump) = Pubkey::find_program_address(
+                &[b"extra-account-metas", mint.key.as_ref()],
+                &hook_program_id,
+            );
+            let mut account_metas = vec![
+                AccountMeta::new(*source.key, false),
+                AccountMeta::new(*mint.key, false),
+                AccountMeta::new(*destination.key, false),
+                AccountMeta::new(*authority.key, false),
+                AccountMeta::new(extra_account_meta_list_pda, false),
+            ];
+            let mut account_infos = vec![
+                source.clone(),
+                mint.clone(),
+                destination.clone(),
+                authority.clone(),
+            ];
+            // Find the ExtraAccountMetaList AccountInfo in remaining_accounts
+            let extra_account_meta_list_info = remaining_accounts.iter().find(|ai| ai.key == &extra_account_meta_list_pda)
+                .ok_or(ProgramError::NotEnoughAccountKeys)?;
+            account_infos.push(extra_account_meta_list_info.clone());
+            // Parse the ExtraAccountMetaList
+            let meta_list_data = extra_account_meta_list_info.try_borrow_data()?;
+            let extra_account_meta_list = ExtraAccountMetaList::unpack(&meta_list_data)?;
+            // Add extra accounts in order
+            let mut extra_account_index = 0;
+            for meta in extra_account_meta_list.iter() {
+                let acc_info = remaining_accounts.get(extra_account_index)
+                    .ok_or(ProgramError::NotEnoughAccountKeys)?;
+                account_metas.push(meta.to_account_meta());
+                account_infos.push(acc_info.clone());
+                extra_account_index += 1;
+            }
+            let hook_ix = Instruction {
+                program_id: hook_program_id,
+                accounts: account_metas,
+                data: hook_ix_data,
+            };
+            solana_program::program::invoke(
+                &hook_ix,
+                &account_infos,
+            )?;
+            let _ = unset_transferring(&source);
+        }
         let ix = spl_token::instruction::transfer(
             token_program.key,
             source.key,
