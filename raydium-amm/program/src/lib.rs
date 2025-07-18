@@ -9,7 +9,8 @@ pub mod error;
 pub mod instruction;
 pub mod invokers;
 pub mod math;
-pub mod processor;
+pub mod process;
+pub use process::*;
 pub mod state;
 
 // Export current solana-sdk types for downstream users who may also be building with a different solana-sdk version

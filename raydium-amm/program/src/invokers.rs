@@ -8,12 +8,16 @@ use solana_program::{
 };
 use std::num::NonZeroU64;
 use spl_token_2022::extension::{
-    StateWithExtensions, transfer_hook::TransferHook,
-    StateWithExtensionsMut, transfer_hook_account::TransferHookAccount,
+    StateWithExtensions, transfer_hook::TransferHook, StateWithExtensionsMut,
 };
-// use spl_transfer_hook_interface::instruction::TransferHookInstruction;
-use solana_program::program_pack::Pack;
-// use spl_transfer_hook_interface::state::ExtraAccountMetaList;
+use spl_token_2022::extension::BaseStateWithExtensions;
+use spl_token_2022::extension::BaseStateWithExtensionsMut;
+use spl_transfer_hook_interface::instruction::ExecuteInstruction;
+use spl_tlv_account_resolution::state::ExtraAccountMetaList;
+use spl_type_length_value::state::TlvStateBorrowed;
+use spl_token_2022::extension::transfer_hook::TransferHookAccount;
+use spl_pod::slice::PodSlice;
+use spl_tlv_account_resolution::account::ExtraAccountMeta;
 
 // Hardcoded whitelist for demo (replace with on-chain registry for production)
 const HOOK_WHITELIST: &[Pubkey] = &[
@@ -32,7 +36,7 @@ fn get_transfer_hook_program_id(mint_account: &AccountInfo) -> Option<Pubkey> {
     let data = mint_account.data.borrow();
     let state = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data).ok()?;
     let ext = state.get_extension::<TransferHook>().ok()?;
-    Some(ext.program_id)
+    ext.program_id.into()
 }
 
 /// Set and unset the transferring flag for a token account
@@ -234,13 +238,17 @@ impl Invokers {
             account_infos.push(extra_account_meta_list_info.clone());
             // Parse the ExtraAccountMetaList
             let meta_list_data = extra_account_meta_list_info.try_borrow_data()?;
-            let extra_account_meta_list = ExtraAccountMetaList::unpack(&meta_list_data)?;
+            let tlv_state = TlvStateBorrowed::unpack(&meta_list_data)?;
+            let extra_account_meta_list = ExtraAccountMetaList::unpack_with_tlv_state::<ExecuteInstruction>(&tlv_state)?;
             // Add extra accounts in order
             let mut extra_account_index = 0;
-            for meta in extra_account_meta_list.iter() {
+            for meta in extra_account_meta_list.data().iter() {
                 let acc_info = remaining_accounts.get(extra_account_index)
                     .ok_or(ProgramError::NotEnoughAccountKeys)?;
-                account_metas.push(meta.to_account_meta());
+                let resolved_meta = meta.resolve(&hook_ix_data, &hook_program_id, |usize| {
+                    account_infos.get(usize).map(|info| (*info.key, Some(info.try_borrow_data().unwrap().as_ref())))
+                })?;
+                account_metas.push(resolved_meta);
                 account_infos.push(acc_info.clone());
                 extra_account_index += 1;
             }
@@ -316,13 +324,17 @@ impl Invokers {
             account_infos.push(extra_account_meta_list_info.clone());
             // Parse the ExtraAccountMetaList
             let meta_list_data = extra_account_meta_list_info.try_borrow_data()?;
-            let extra_account_meta_list = ExtraAccountMetaList::unpack(&meta_list_data)?;
+            let tlv_state = TlvStateBorrowed::unpack(&meta_list_data)?;
+            let extra_account_meta_list = ExtraAccountMetaList::unpack_with_tlv_state::<TransferHookInstruction>(&tlv_state)?;
             // Add extra accounts in order
             let mut extra_account_index = 0;
-            for meta in extra_account_meta_list.iter() {
+            for meta in extra_account_meta_list.data().iter() {
                 let acc_info = remaining_accounts.get(extra_account_index)
                     .ok_or(ProgramError::NotEnoughAccountKeys)?;
-                account_metas.push(meta.to_account_meta());
+                let resolved_meta = meta.resolve(&hook_ix_data, &hook_program_id, |usize| {
+                    account_infos.get(usize).map(|info| (*info.key, Some(info.try_borrow_data().unwrap().as_ref())))
+                })?;
+                account_metas.push(resolved_meta);
                 account_infos.push(acc_info.clone());
                 extra_account_index += 1;
             }
