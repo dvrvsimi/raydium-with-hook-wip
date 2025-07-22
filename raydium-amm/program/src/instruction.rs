@@ -132,7 +132,6 @@ pub struct ConfigArgs {
 }
 
 /// Instructions supported by the AmmInfo program.
-#[repr(C)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AmmInstruction {
     ///   Initializes a new AmmInfo.
@@ -369,6 +368,41 @@ pub enum AmmInstruction {
 
     /// Update amm config account by admin
     UpdateConfigAccount(ConfigArgs),
+
+    // New Token-2022 instructions
+    CreateToken2022Mint(CreateToken2022MintInstruction),
+    CreateTransferHook(CreateTransferHookInstruction),
+    UpdateHookWhitelist(UpdateHookWhitelistInstruction),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateToken2022MintInstruction {
+    pub decimals: u8,
+    pub mint_authority: Pubkey,
+    pub freeze_authority: Option<Pubkey>,
+    pub transfer_hook_program_id: Option<Pubkey>,
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateTransferHookInstruction {
+    pub hook_program_id: Pubkey,
+    pub hook_name: String,
+    pub hook_description: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateHookWhitelistInstruction {
+    pub hook_program_id: Pubkey,
+    pub action: HookWhitelistAction, // Add or Remove
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HookWhitelistAction {
+    Add,
+    Remove,
 }
 
 impl AmmInstruction {
@@ -837,6 +871,41 @@ impl AmmInstruction {
                     _ => return Err(ProgramError::InvalidInstructionData.into()),
                 }
             }
+            Self::CreateToken2022Mint(instruction) => {
+                buf.push(16);
+                buf.extend_from_slice(&instruction.decimals.to_le_bytes());
+                buf.extend_from_slice(&instruction.mint_authority.to_bytes());
+                buf.push(if instruction.freeze_authority.is_some() { 1 } else { 0 });
+                if let Some(freeze_authority) = instruction.freeze_authority {
+                    buf.extend_from_slice(&freeze_authority.to_bytes());
+                }
+                buf.push(if instruction.transfer_hook_program_id.is_some() { 1 } else { 0 });
+                if let Some(hook_program_id) = instruction.transfer_hook_program_id {
+                    buf.extend_from_slice(&hook_program_id.to_bytes());
+                }
+                buf.extend_from_slice(&instruction.name.len().to_le_bytes());
+                buf.extend_from_slice(instruction.name.as_bytes());
+                buf.extend_from_slice(&instruction.symbol.len().to_le_bytes());
+                buf.extend_from_slice(instruction.symbol.as_bytes());
+                buf.extend_from_slice(&instruction.uri.len().to_le_bytes());
+                buf.extend_from_slice(instruction.uri.as_bytes());
+            }
+            Self::CreateTransferHook(instruction) => {
+                buf.push(17);
+                buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
+                buf.extend_from_slice(&instruction.hook_name.len().to_le_bytes());
+                buf.extend_from_slice(instruction.hook_name.as_bytes());
+                buf.extend_from_slice(&instruction.hook_description.len().to_le_bytes());
+                buf.extend_from_slice(instruction.hook_description.as_bytes());
+            }
+            Self::UpdateHookWhitelist(instruction) => {
+                buf.push(18);
+                buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
+                buf.push(match instruction.action {
+                    HookWhitelistAction::Add => 0,
+                    HookWhitelistAction::Remove => 1,
+                });
+            }
         }
         Ok(buf)
     }
@@ -977,6 +1046,8 @@ pub fn withdraw(
     amm_lp_mint: &Pubkey,
     amm_coin_vault: &Pubkey,
     amm_pc_vault: &Pubkey,
+    amm_coin_mint: &Pubkey,
+    amm_pc_mint: &Pubkey,
     market_program: &Pubkey,
     market: &Pubkey,
     market_coin_vault: &Pubkey,
@@ -1014,6 +1085,8 @@ pub fn withdraw(
         AccountMeta::new(*amm_lp_mint, false),
         AccountMeta::new(*amm_coin_vault, false),
         AccountMeta::new(*amm_pc_vault, false),
+        AccountMeta::new_readonly(*amm_coin_mint, false),
+        AccountMeta::new_readonly(*amm_pc_mint, false),
         // market
         AccountMeta::new_readonly(*market_program, false),
         AccountMeta::new(*market, false),

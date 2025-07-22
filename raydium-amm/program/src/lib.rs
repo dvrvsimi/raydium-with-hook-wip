@@ -1,17 +1,89 @@
 // #![deny(missing_docs)]
 
 //! An Uniswap-like program for the Solana blockchain.
-#[macro_use]
-pub mod log;
-
-mod entrypoint;
 pub mod error;
 pub mod instruction;
 pub mod invokers;
+pub mod log;
 pub mod math;
 pub mod process;
-pub use process::*;
 pub mod state;
+
+use solana_program::{
+    account_info::AccountInfo,
+    entrypoint,
+    entrypoint::ProgramResult,
+    pubkey::Pubkey,
+};
+
+entrypoint!(process_instruction);
+
+pub fn process_instruction(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    input: &[u8],
+) -> ProgramResult {
+    let instruction = crate::instruction::AmmInstruction::unpack(input)?;
+    match instruction {
+        crate::instruction::AmmInstruction::PreInitialize(_init_arg) => {
+            unimplemented!("This instruction is not supported, please use Initialize2")
+        }
+        crate::instruction::AmmInstruction::Initialize(_init1) => {
+            unimplemented!("This instruction is not supported, please use Initialize2")
+        }
+        crate::instruction::AmmInstruction::Initialize2(init2) => {
+            crate::process::process_initialize2(program_id, accounts, init2)
+        }
+        crate::instruction::AmmInstruction::MonitorStep(monitor) => {
+            crate::process::process_monitor_step(program_id, accounts, monitor)
+        }
+        crate::instruction::AmmInstruction::Deposit(deposit) => {
+            crate::process::process_deposit(program_id, accounts, deposit)
+        }
+        crate::instruction::AmmInstruction::Withdraw(withdraw) => {
+            crate::process::process_withdraw(program_id, accounts, withdraw)
+        }
+        crate::instruction::AmmInstruction::MigrateToOpenBook => {
+            crate::process::process_migrate_to_openbook(program_id, accounts)
+        }
+        crate::instruction::AmmInstruction::SetParams(setparams) => {
+            crate::process::process_set_params(program_id, accounts, setparams)
+        }
+        crate::instruction::AmmInstruction::WithdrawPnl => {
+            crate::process::process_withdrawpnl(program_id, accounts)
+        }
+        crate::instruction::AmmInstruction::WithdrawSrm(withdrawsrm) => {
+            crate::process::process_withdraw_srm(program_id, accounts, withdrawsrm)
+        }
+        crate::instruction::AmmInstruction::SwapBaseIn(swap) => {
+            crate::process::process_swap_base_in(program_id, accounts, swap)
+        }
+        crate::instruction::AmmInstruction::SwapBaseOut(swap) => {
+            crate::process::process_swap_base_out(program_id, accounts, swap)
+        }
+        crate::instruction::AmmInstruction::SimulateInfo(simulate) => {
+            crate::process::process_simulate_info(program_id, accounts, simulate)
+        }
+        crate::instruction::AmmInstruction::AdminCancelOrders(cancel) => {
+            crate::process::process_admin_cancel_orders(program_id, accounts, cancel)
+        }
+        crate::instruction::AmmInstruction::CreateConfigAccount => {
+            crate::process::process_create_config(program_id, accounts)
+        }
+        crate::instruction::AmmInstruction::UpdateConfigAccount(config_args) => {
+            crate::process::process_update_config(program_id, accounts, config_args)
+        }
+        crate::instruction::AmmInstruction::CreateToken2022Mint(create_mint) => {
+            crate::process::token2022::process_create_token2022_mint(program_id, accounts, create_mint)
+        }
+        crate::instruction::AmmInstruction::CreateTransferHook(create_hook) => {
+            crate::process::token2022::process_create_transfer_hook(program_id, accounts, create_hook)
+        }
+        crate::instruction::AmmInstruction::UpdateHookWhitelist(update_whitelist) => {
+            crate::process::token2022::process_update_hook_whitelist(program_id, accounts, update_whitelist)
+        }
+    }
+}
 
 // Export current solana-sdk types for downstream users who may also be building with a different solana-sdk version
 pub use solana_program;

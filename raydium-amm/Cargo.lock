@@ -1375,6 +1375,7 @@ dependencies = [
  "serum_dex",
  "solana-program",
  "solana-security-txt",
+ "solana-system-interface",
  "spl-associated-token-account",
  "spl-discriminator",
  "spl-pod 0.2.3",

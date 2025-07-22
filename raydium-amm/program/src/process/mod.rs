@@ -1,9 +1,32 @@
-pub mod deposit;
-pub mod withdraw;
-pub mod swap;
-pub mod helpers;
+pub mod admin;
 pub mod args;
+pub mod config;
 pub mod constants;
+pub mod deposit;
+pub mod helpers;
+pub mod initialize;
+pub mod migrate;
+pub mod monitor;
+pub mod set_params;
+pub mod simulate;
+pub mod swap;
+pub mod token2022;
+pub mod withdraw;
+pub mod withdraw_pnl;
+pub mod withdraw_srm;
 
 // Re-export main entrypoints for easier access
-pub use deposit::process_deposit; 
+pub use deposit::process_deposit;
+pub use withdraw::process_withdraw;
+pub use swap::process_swap_base_in;
+pub use swap::process_swap_base_out;
+pub use initialize::process_initialize2;
+pub use withdraw_pnl::process_withdrawpnl;
+pub use migrate::process_migrate_to_openbook;
+pub use withdraw_srm::process_withdraw_srm;
+pub use simulate::process_simulate_info;
+pub use set_params::process_set_params;
+pub use monitor::process_monitor_step;
+pub use admin::process_admin_cancel_orders;
+pub use config::process_create_config;
+pub use config::process_update_config; 

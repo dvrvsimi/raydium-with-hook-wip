@@ -16,8 +16,8 @@ use spl_transfer_hook_interface::instruction::ExecuteInstruction;
 use spl_tlv_account_resolution::state::ExtraAccountMetaList;
 use spl_type_length_value::state::TlvStateBorrowed;
 use spl_token_2022::extension::transfer_hook::TransferHookAccount;
-use spl_pod::slice::PodSlice;
-use spl_tlv_account_resolution::account::ExtraAccountMeta;
+use spl_transfer_hook_interface::instruction::TransferHookInstruction;
+
 
 // Hardcoded whitelist for demo (replace with on-chain registry for production)
 const HOOK_WHITELIST: &[Pubkey] = &[
@@ -246,7 +246,8 @@ impl Invokers {
                 let acc_info = remaining_accounts.get(extra_account_index)
                     .ok_or(ProgramError::NotEnoughAccountKeys)?;
                 let resolved_meta = meta.resolve(&hook_ix_data, &hook_program_id, |usize| {
-                    account_infos.get(usize).map(|info| (*info.key, Some(info.try_borrow_data().unwrap().as_ref())))
+                    account_infos.get(usize).map(|info| 
+                        (info.key, None))
                 })?;
                 account_metas.push(resolved_meta);
                 account_infos.push(acc_info.clone());
@@ -325,14 +326,15 @@ impl Invokers {
             // Parse the ExtraAccountMetaList
             let meta_list_data = extra_account_meta_list_info.try_borrow_data()?;
             let tlv_state = TlvStateBorrowed::unpack(&meta_list_data)?;
-            let extra_account_meta_list = ExtraAccountMetaList::unpack_with_tlv_state::<TransferHookInstruction>(&tlv_state)?;
+            let extra_account_meta_list = ExtraAccountMetaList::unpack_with_tlv_state::<ExecuteInstruction>(&tlv_state)?;
             // Add extra accounts in order
             let mut extra_account_index = 0;
             for meta in extra_account_meta_list.data().iter() {
                 let acc_info = remaining_accounts.get(extra_account_index)
                     .ok_or(ProgramError::NotEnoughAccountKeys)?;
                 let resolved_meta = meta.resolve(&hook_ix_data, &hook_program_id, |usize| {
-                    account_infos.get(usize).map(|info| (*info.key, Some(info.try_borrow_data().unwrap().as_ref())))
+                    account_infos.get(usize).map(|info| 
+                        (info.key, None))
                 })?;
                 account_metas.push(resolved_meta);
                 account_infos.push(acc_info.clone());

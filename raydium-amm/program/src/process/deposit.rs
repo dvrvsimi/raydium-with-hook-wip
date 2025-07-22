@@ -14,10 +14,12 @@ use crate::{
     state::{AmmInfo, AmmStatus, TargetOrders},
 };
 use crate::process::constants::AUTHORITY_AMM;
-use crate::process::helpers::{encode_ray_log, identity, authority_id, unpack_token_account, load_serum_market_order, calc_take_pnl};
+use crate::process::helpers::{identity, authority_id, unpack_token_account, load_serum_market_order, calc_take_pnl};
 use crate::process::args::{DepositLog, LogType};
 use serum_dex::state::ToAlignedBytes;
-use crate::log::log_keys_mismatch;
+use crate::check_assert_eq;
+use crate::log::{log_keys_mismatch, encode_ray_log};
+
 
 /// The number of accounts expected for a deposit instruction.
 /// This is based on the order of next_account_info calls in the function:

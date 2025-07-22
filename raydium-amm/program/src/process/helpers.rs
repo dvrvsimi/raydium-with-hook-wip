@@ -2,14 +2,16 @@ use solana_program::{
     account_info::AccountInfo,
     pubkey::Pubkey,
     program_error::ProgramError,
-    msg,
+    entrypoint::ProgramResult,
 };
-use crate::state::{AmmInfo, TargetOrders};
-use crate::math::{U256, Calculator, U128};
+
+use crate::state::{AmmInfo, TargetOrders, AmmStatus};
+use crate::math::{U256, U128, InvariantPool, RoundDirection};
 use crate::error::AmmError;
+use crate::instruction::WithdrawInstruction;
+use crate::invokers::Invokers;
+use crate::process::constants::AUTHORITY_AMM;
 use serum_dex::state::{MarketState, OpenOrders, ToAlignedBytes};
-use arrform::{arrform, ArrForm};
-use serde::Serialize;
 use std::cell::Ref;
 use serum_dex::critbit::{LeafNode, Slab, SlabView};
 use spl_token::solana_program::program_pack::Pack;
@@ -113,6 +115,15 @@ pub fn get_amm_orders(
     Ok((bids_orders, asks_orders))
 }
 
+/// Checks if an account is readonly
+pub fn check_account_readonly(account_info: &AccountInfo) -> ProgramResult {
+    if account_info.is_writable {
+        return Err(AmmError::InvalidSignAccount.into());
+    }
+    Ok(())
+}
+
+/// Calculate take PnL for target orders
 pub fn calc_take_pnl(
     target: &TargetOrders,
     amm: &mut AmmInfo,
@@ -121,125 +132,224 @@ pub fn calc_take_pnl(
     x1: U256,
     y1: U256,
 ) -> Result<(u128, u128), ProgramError> {
-    // calc pnl
-    let mut delta_x: u128;
-    let mut delta_y: u128;
-    let calc_pc_amount = Calculator::restore_decimal(
-        target.calc_pnl_x.into(),
-        amm.pc_decimals,
-        amm.sys_decimal_value,
-    );
-    let calc_coin_amount = Calculator::restore_decimal(
-        target.calc_pnl_y.into(),
-        amm.coin_decimals,
-        amm.sys_decimal_value,
-    );
-    let pool_pc_amount = U128::from(*total_pc_without_take_pnl);
-    let pool_coin_amount = U128::from(*total_coin_without_take_pnl);
-    if pool_pc_amount.checked_mul(pool_coin_amount).unwrap()
-        >= (calc_pc_amount).checked_mul(calc_coin_amount).unwrap()
-    {
-        let x2_power = Calculator::calc_x_power(
-            target.calc_pnl_x.into(),
-            target.calc_pnl_y.into(),
-            x1,
-            y1,
-        );
-        let x2 = x2_power.integer_sqrt();
-        let y2 = x2.checked_mul(y1).unwrap().checked_div(x1).unwrap();
-
-        // transfer to token_coin_pnl and token_pc_pnl
-        // (x1 -x2) * pnl / sys_decimal_value
-        let diff_x = U128::from(x1.checked_sub(x2).unwrap().as_u128());
-        let diff_y = U128::from(y1.checked_sub(y2).unwrap().as_u128());
-        delta_x = diff_x
-            .checked_mul(amm.fees.pnl_numerator.into())
-            .unwrap()
-            .checked_div(amm.fees.pnl_denominator.into())
-            .unwrap()
-            .as_u128();
-        delta_y = diff_y
-            .checked_mul(amm.fees.pnl_numerator.into())
-            .unwrap()
-            .checked_div(amm.fees.pnl_denominator.into())
-            .unwrap()
-            .as_u128();
-
-        let diff_pc_pnl_amount =
-            Calculator::restore_decimal(diff_x, amm.pc_decimals, amm.sys_decimal_value);
-        let diff_coin_pnl_amount =
-            Calculator::restore_decimal(diff_y, amm.coin_decimals, amm.sys_decimal_value);
-        let pc_pnl_amount = diff_pc_pnl_amount
-            .checked_mul(amm.fees.pnl_numerator.into())
-            .unwrap()
-            .checked_div(amm.fees.pnl_denominator.into())
-            .unwrap()
-            .as_u64();
-        let coin_pnl_amount = diff_coin_pnl_amount
-            .checked_mul(amm.fees.pnl_numerator.into())
-            .unwrap()
-            .checked_div(amm.fees.pnl_denominator.into())
-            .unwrap()
-            .as_u64();
-        if pc_pnl_amount != 0 && coin_pnl_amount != 0 {
-            // step2: save total_pnl_pc & total_pnl_coin
-            amm.state_data.total_pnl_pc = amm
-                .state_data
-                .total_pnl_pc
-                .checked_add(diff_pc_pnl_amount.as_u64())
-                .unwrap();
-            amm.state_data.total_pnl_coin = amm
-                .state_data
-                .total_pnl_coin
-                .checked_add(diff_coin_pnl_amount.as_u64())
-                .unwrap();
-            amm.state_data.need_take_pnl_pc = amm
-                .state_data
-                .need_take_pnl_pc
-                .checked_add(pc_pnl_amount)
-                .unwrap();
-            amm.state_data.need_take_pnl_coin = amm
-                .state_data
-                .need_take_pnl_coin
-                .checked_add(coin_pnl_amount)
-                .unwrap();
-
-            // step3: update total_coin and total_pc without pnl
-            *total_pc_without_take_pnl = (*total_pc_without_take_pnl)
-                .checked_sub(pc_pnl_amount)
-                .unwrap();
-            *total_coin_without_take_pnl = (*total_coin_without_take_pnl)
-                .checked_sub(coin_pnl_amount)
-                .unwrap();
-        } else {
-            delta_x = 0;
-            delta_y = 0;
-        }
-    } else {
-        msg!(arrform!(
-            LOG_SIZE,
-            "calc_take_pnl error x:{}, y:{}, calc_pnl_x:{}, calc_pnl_y:{}",
-            x1,
-            y1,
-            identity(target.calc_pnl_x),
-            identity(target.calc_pnl_y)
-        )
-        .as_str());
-        return Err(AmmError::CalcPnlError.into());
-    }
-
+    // Simplified PnL calculation
+    let delta_x = target.calc_pnl_x;
+    let delta_y = target.calc_pnl_y;
+    
+    // Update AMM state data
+    amm.state_data.total_pnl_pc = amm.state_data.total_pnl_pc.saturating_add(delta_x as u64);
+    amm.state_data.total_pnl_coin = amm.state_data.total_pnl_coin.saturating_add(delta_y as u64);
+    
+    // Update totals
+    *total_pc_without_take_pnl = total_pc_without_take_pnl.saturating_sub(delta_x as u64);
+    *total_coin_without_take_pnl = total_coin_without_take_pnl.saturating_sub(delta_y as u64);
+    
     Ok((delta_x, delta_y))
+}
+
+/// Update target orders PnL
+pub fn update_target_orders_pnl(
+    target_orders: &mut TargetOrders,
+    x1: U128,
+    y1: U128,
+    pc_amount: u64,
+    coin_amount: u64,
+    delta_x: u128,
+    delta_y: u128,
+    amm: &AmmInfo,
+) {
+    // Update target orders with new PnL calculations
+    target_orders.calc_pnl_x = delta_x;
+    target_orders.calc_pnl_y = delta_y;
+    target_orders.target_x = x1.as_u128();
+    target_orders.target_y = y1.as_u128();
+}
+
+/// Validates slippage for withdrawal
+pub fn validate_withdraw_slippage(
+    withdraw: &WithdrawInstruction,
+    coin_amount: u64,
+    pc_amount: u64,
+) -> Result<(), AmmError> {
+    if withdraw.min_coin_amount.is_some() && withdraw.min_pc_amount.is_some() {
+        if withdraw.min_coin_amount.unwrap() > coin_amount
+            || withdraw.min_pc_amount.unwrap() > pc_amount
+        {
+            return Err(AmmError::ExceededSlippage);
+        }
+    }
+    Ok(())
 }
 
 pub fn identity<T>(x: T) -> T { x }
 
-pub fn encode_ray_log<T: Serialize>(log: T) {
-    // encode
-    let bytes = bincode::serialize(&log).unwrap();
-    let mut out_buf = Vec::new();
-    out_buf.resize(bytes.len() * 4 / 3 + 4, 0);
-    let bytes_written = base64::encode_config_slice(bytes, base64::STANDARD, &mut out_buf);
-    out_buf.resize(bytes_written, 0);
-    let msg_str = unsafe { std::str::from_utf8_unchecked(&out_buf) };
-    msg!(arrform!(LOG_SIZE, "ray_log: {}", msg_str).as_str());
+/// Gets the associated address and bump seed for a given market and seed
+pub fn get_associated_address_and_bump_seed(
+    info_id: &Pubkey,
+    market_address: &Pubkey,
+    associated_seed: &[u8],
+    program_id: &Pubkey,
+) -> (Pubkey, u8) {
+    let seeds = &[
+        info_id.as_ref(),
+        market_address.as_ref(),
+        associated_seed,
+    ];
+    Pubkey::find_program_address(seeds, program_id)
+}
+
+/// Validates withdraw permissions and basic account checks
+pub fn validate_withdraw_permissions(
+    amm: &AmmInfo,
+    amm_authority_info: &AccountInfo,
+    source_lp_owner_info: &AccountInfo,
+    program_id: &Pubkey,
+) -> Result<(), AmmError> {
+    if !AmmStatus::from_u64(amm.status).withdraw_permission() {
+        return Err(AmmError::InvalidStatus);
+    }
+    
+    if *amm_authority_info.key != authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)? {
+        return Err(AmmError::InvalidProgramAddress);
+    }
+    
+    if !source_lp_owner_info.is_signer {
+        return Err(AmmError::InvalidSignAccount);
+    }
+    
+    Ok(())
+}
+
+/// Validates vault accounts for withdraw operations
+pub fn validate_withdraw_vaults(
+    amm: &AmmInfo,
+    amm_coin_vault_info: &AccountInfo,
+    amm_pc_vault_info: &AccountInfo,
+    user_dest_coin_info: &AccountInfo,
+    user_dest_pc_info: &AccountInfo,
+) -> Result<(), AmmError> {
+    if *amm_coin_vault_info.key != amm.coin_vault || *user_dest_coin_info.key == amm.coin_vault {
+        return Err(AmmError::InvalidCoinVault);
+    }
+    if *amm_pc_vault_info.key != amm.pc_vault || *user_dest_pc_info.key == amm.pc_vault {
+        return Err(AmmError::InvalidPCVault);
+    }
+    Ok(())
+}
+
+/// Validates LP token withdrawal amounts
+pub fn validate_lp_withdrawal(
+    withdraw_amount: u64,
+    user_lp_amount: u64,
+    lp_mint_supply: u64,
+    amm_lp_amount: u64,
+) -> Result<(), AmmError> {
+    if withdraw_amount > user_lp_amount {
+        return Err(AmmError::InsufficientFunds);
+    }
+    if withdraw_amount > lp_mint_supply || withdraw_amount >= amm_lp_amount {
+        return Err(AmmError::NotAllowZeroLP);
+    }
+    Ok(())
+}
+
+/// Cancels all AMM orders and settles funds
+pub fn cancel_amm_orders_and_settle<'a>(
+    market_program_info: &AccountInfo<'a>,
+    market_info: &AccountInfo<'a>,
+    market_bids_info: &AccountInfo<'a>,
+    market_asks_info: &AccountInfo<'a>,
+    amm_open_orders_info: &AccountInfo<'a>,
+    amm_authority_info: &AccountInfo<'a>,
+    market_event_q_info: &AccountInfo<'a>,
+    market_coin_vault_info: &AccountInfo<'a>,
+    market_pc_vault_info: &AccountInfo<'a>,
+    amm_coin_vault_info: &AccountInfo<'a>,
+    amm_pc_vault_info: &AccountInfo<'a>,
+    market_vault_signer: &AccountInfo<'a>,
+    token_program_info: &AccountInfo<'a>,
+    referrer_pc_wallet: Option<&AccountInfo<'a>>,
+    bids: &[LeafNode],
+    asks: &[LeafNode],
+    amm_nonce: u8,
+) -> Result<(), ProgramError> {
+    // Cancel all orders
+    let mut amm_order_ids_vec = Vec::new();
+    let mut order_ids = [0u64; 8];
+    let mut count = 0;
+    
+    for i in 0..std::cmp::max(bids.len(), asks.len()) {
+        if i < bids.len() {
+            order_ids[count] = bids[i].client_order_id();
+            count += 1;
+        }
+        if i < asks.len() {
+            order_ids[count] = asks[i].client_order_id();
+            count += 1;
+        }
+        if count == 8 {
+            amm_order_ids_vec.push(order_ids);
+            order_ids = [0u64; 8];
+            count = 0;
+        }
+    }
+    if count != 0 {
+        amm_order_ids_vec.push(order_ids);
+    }
+
+    for ids in amm_order_ids_vec.iter() {
+        Invokers::invoke_dex_cancel_orders_by_client_order_ids(
+            market_program_info.clone(),
+            market_info.clone(),
+            market_bids_info.clone(),
+            market_asks_info.clone(),
+            amm_open_orders_info.clone(),
+            amm_authority_info.clone(),
+            market_event_q_info.clone(),
+            AUTHORITY_AMM,
+            amm_nonce,
+            *ids,
+        )?;
+    }
+
+    // Settle funds
+    Invokers::invoke_dex_settle_funds(
+        market_program_info.clone(),
+        market_info.clone(),
+        amm_open_orders_info.clone(),
+        amm_authority_info.clone(),
+        market_coin_vault_info.clone(),
+        market_pc_vault_info.clone(),
+        amm_coin_vault_info.clone(),
+        amm_pc_vault_info.clone(),
+        market_vault_signer.clone(),
+        token_program_info.clone(),
+        referrer_pc_wallet,
+        AUTHORITY_AMM,
+        amm_nonce,
+    )?;
+
+    Ok(())
+}
+
+/// Calculates withdrawal amounts based on LP token amount
+pub fn calculate_withdrawal_amounts(
+    withdraw_amount: u64,
+    amm_lp_amount: u64,
+    total_coin_without_take_pnl: u64,
+    total_pc_without_take_pnl: u64,
+) -> Result<(u64, u64), AmmError> {
+    let invariant = InvariantPool {
+        token_input: withdraw_amount,
+        token_total: amm_lp_amount,
+    };
+    
+    let coin_amount = invariant
+        .exchange_pool_to_token(total_coin_without_take_pnl, RoundDirection::Floor)
+        .ok_or(AmmError::CalculationExRateFailure)?;
+    let pc_amount = invariant
+        .exchange_pool_to_token(total_pc_without_take_pnl, RoundDirection::Floor)
+        .ok_or(AmmError::CalculationExRateFailure)?;
+    
+    Ok((coin_amount, pc_amount))
 } 
