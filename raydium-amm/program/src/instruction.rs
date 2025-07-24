@@ -871,41 +871,43 @@ impl AmmInstruction {
                     _ => return Err(ProgramError::InvalidInstructionData.into()),
                 }
             }
-            Self::CreateToken2022Mint(instruction) => {
-                buf.push(16);
-                buf.extend_from_slice(&instruction.decimals.to_le_bytes());
-                buf.extend_from_slice(&instruction.mint_authority.to_bytes());
-                buf.push(if instruction.freeze_authority.is_some() { 1 } else { 0 });
-                if let Some(freeze_authority) = instruction.freeze_authority {
-                    buf.extend_from_slice(&freeze_authority.to_bytes());
-                }
-                buf.push(if instruction.transfer_hook_program_id.is_some() { 1 } else { 0 });
-                if let Some(hook_program_id) = instruction.transfer_hook_program_id {
-                    buf.extend_from_slice(&hook_program_id.to_bytes());
-                }
-                buf.extend_from_slice(&instruction.name.len().to_le_bytes());
-                buf.extend_from_slice(instruction.name.as_bytes());
-                buf.extend_from_slice(&instruction.symbol.len().to_le_bytes());
-                buf.extend_from_slice(instruction.symbol.as_bytes());
-                buf.extend_from_slice(&instruction.uri.len().to_le_bytes());
-                buf.extend_from_slice(instruction.uri.as_bytes());
-            }
-            Self::CreateTransferHook(instruction) => {
-                buf.push(17);
-                buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
-                buf.extend_from_slice(&instruction.hook_name.len().to_le_bytes());
-                buf.extend_from_slice(instruction.hook_name.as_bytes());
-                buf.extend_from_slice(&instruction.hook_description.len().to_le_bytes());
-                buf.extend_from_slice(instruction.hook_description.as_bytes());
-            }
-            Self::UpdateHookWhitelist(instruction) => {
-                buf.push(18);
-                buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
-                buf.push(match instruction.action {
-                    HookWhitelistAction::Add => 0,
-                    HookWhitelistAction::Remove => 1,
-                });
-            }
+
+            // // need to do these directly
+            // Self::CreateToken2022Mint(instruction) => {
+            //     buf.push(16);
+            //     buf.extend_from_slice(&instruction.decimals.to_le_bytes());
+            //     buf.extend_from_slice(&instruction.mint_authority.to_bytes());
+            //     buf.push(if instruction.freeze_authority.is_some() { 1 } else { 0 });
+            //     if let Some(freeze_authority) = instruction.freeze_authority {
+            //         buf.extend_from_slice(&freeze_authority.to_bytes());
+            //     }
+            //     buf.push(if instruction.transfer_hook_program_id.is_some() { 1 } else { 0 });
+            //     if let Some(hook_program_id) = instruction.transfer_hook_program_id {
+            //         buf.extend_from_slice(&hook_program_id.to_bytes());
+            //     }
+            //     buf.extend_from_slice(&instruction.name.len().to_le_bytes());
+            //     buf.extend_from_slice(instruction.name.as_bytes());
+            //     buf.extend_from_slice(&instruction.symbol.len().to_le_bytes());
+            //     buf.extend_from_slice(instruction.symbol.as_bytes());
+            //     buf.extend_from_slice(&instruction.uri.len().to_le_bytes());
+            //     buf.extend_from_slice(instruction.uri.as_bytes());
+            // }
+            // Self::CreateTransferHook(instruction) => {
+            //     buf.push(17);
+            //     buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
+            //     buf.extend_from_slice(&instruction.hook_name.len().to_le_bytes());
+            //     buf.extend_from_slice(instruction.hook_name.as_bytes());
+            //     buf.extend_from_slice(&instruction.hook_description.len().to_le_bytes());
+            //     buf.extend_from_slice(instruction.hook_description.as_bytes());
+            // }
+            // Self::UpdateHookWhitelist(instruction) => {
+            //     buf.push(18);
+            //     buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
+            //     buf.push(match instruction.action {
+            //         HookWhitelistAction::Add => 0,
+            //         HookWhitelistAction::Remove => 1,
+            //     });
+            // }
         }
         Ok(buf)
     }

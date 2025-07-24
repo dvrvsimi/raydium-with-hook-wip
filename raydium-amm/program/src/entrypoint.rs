@@ -1,4 +1,4 @@
-git //! Program entrypoint definitions
+//! Program entrypoint definitions
 
 #![cfg(not(feature = "no-entrypoint"))]
 
