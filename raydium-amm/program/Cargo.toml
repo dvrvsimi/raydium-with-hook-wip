@@ -22,12 +22,13 @@ name = "raydium_amm"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-solana-program = "=2.1.0"
-spl-token = { version = "=7.0.0", features = ["no-entrypoint"] }
-spl-associated-token-account = { version = "6.0.0", features = [
+solana-program = "^2.2.0"
+spl-token = { version = "^8.0.0", features = ["no-entrypoint"] }
+spl-token-2022 = { version = "^8.0.0", features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "^6.0.0", features = [
     "no-entrypoint",
 ] }
-serum_dex = { version = "0.5.10", git = "https://github.com/raydium-io/openbook-dex", features = [
+serum_dex = { version = "0.5.10", git = "https://github.com/dvrvsimi/openbook-dex", features = [
     "no-entrypoint",
     "program",
 ] }
@@ -44,17 +45,13 @@ bytemuck = { version = "1.4.0" }
 safe-transmute = "0.11.0"
 thiserror = "1.0.20"
 uint = "0.10.0"
+spl-transfer-hook-interface = "0.9.0"
+spl-tlv-account-resolution = "0.9.0"
+spl-type-length-value = "0.7.0"
+spl-discriminator = "0.4.0"
+spl-pod = "0.2.0"
+solana-system-interface = "1.0.0"
 
 [dev-dependencies]
 bumpalo = { version = "3.4.0", features = ["collections"] }
 proptest = "1.6"
-
-[profile.release]
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-overflow-checks = true
-[profile.release.build-override]
-opt-level = 3
-incremental = false
-codegen-units = 1

@@ -4,7 +4,7 @@ use num_derive::FromPrimitive;
 use solana_program::{
     decode_error::DecodeError,
     msg,
-    program_error::{PrintProgramError, ProgramError},
+    program_error::ProgramError,
 };
 use thiserror::Error;
 
@@ -211,6 +211,9 @@ pub enum AmmError {
     /// Unknown Amm Error
     #[error("Unknown Amm Error")]
     UnknownAmmError,
+    /// Transfer hook program not whitelisted
+    #[error("Transfer hook program not whitelisted")]
+    TransferHookNotWhitelisted,
 }
 
 impl From<AmmError> for ProgramError {
@@ -224,15 +227,8 @@ impl<T> DecodeError<T> for AmmError {
     }
 }
 
-impl PrintProgramError for AmmError {
-    fn print<E>(&self)
-    where
-        E: 'static
-            + std::error::Error
-            + DecodeError<E>
-            + PrintProgramError
-            + num_traits::FromPrimitive,
-    {
+impl AmmError {
+    pub fn print(&self) {
         match self {
             AmmError::AlreadyInUse => msg!("Error: AlreadyInUse"),
             AmmError::InvalidProgramAddress => msg!("Error: InvalidProgramAddress"),
@@ -303,6 +299,7 @@ impl PrintProgramError for AmmError {
             AmmError::RepeatCreateConfigAccount => msg!("Error: RepeatCreateConfigAccount"),
             AmmError::MarketLotSizeIsTooLarge => msg!("Error: Market lotSize is too large"),
             AmmError::InitLpAmountTooLess => msg!("Error: Init lp amount is too less(Because 10**lp_decimals amount lp will be locked)"),
+            AmmError::TransferHookNotWhitelisted => msg!("Error: Transfer hook program not whitelisted"),
             AmmError::UnknownAmmError => msg!("Error: UnknownAmmError"),
         }
     }
