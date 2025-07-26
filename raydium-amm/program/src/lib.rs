@@ -9,6 +9,9 @@ pub mod math;
 pub mod process;
 pub mod state;
 
+#[cfg(test)]
+mod tests;
+
 use solana_program::{
     account_info::AccountInfo,
     entrypoint,
@@ -80,7 +83,10 @@ pub fn process_instruction(
             crate::process::token2022::process_create_transfer_hook(program_id, accounts, create_hook)
         }
         crate::instruction::AmmInstruction::UpdateHookWhitelist(update_whitelist) => {
-            crate::process::token2022::process_update_hook_whitelist(program_id, accounts, update_whitelist)
+            crate::process::process_update_hook_whitelist(program_id, accounts, update_whitelist)
+        }
+        crate::instruction::AmmInstruction::TokenTransfer(transfer) => {
+            crate::process::token2022::process_token_transfer(program_id, accounts, transfer)
         }
     }
 }

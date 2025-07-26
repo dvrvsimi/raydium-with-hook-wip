@@ -373,6 +373,7 @@ pub enum AmmInstruction {
     CreateToken2022Mint(CreateToken2022MintInstruction),
     CreateTransferHook(CreateTransferHookInstruction),
     UpdateHookWhitelist(UpdateHookWhitelistInstruction),
+    TokenTransfer(TokenTransferInstruction),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -403,6 +404,12 @@ pub struct UpdateHookWhitelistInstruction {
 pub enum HookWhitelistAction {
     Add,
     Remove,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TokenTransferInstruction {
+    pub amount: u64,
 }
 
 impl AmmInstruction {
@@ -629,6 +636,88 @@ impl AmmInstruction {
                         return Err(ProgramError::InvalidInstructionData.into());
                     }
                 }
+            }
+            16 => {
+                // CreateToken2022Mint
+                let (decimals, rest) = Self::unpack_u8(rest)?;
+                let mint_authority = array_ref![rest, 0, 32];
+                let rest = &rest[32..];
+                let freeze_authority = if rest.len() >= 32 {
+                    let freeze_auth = array_ref![rest, 0, 32];
+                    if freeze_auth.iter().all(|&b| b == 0) {
+                        None
+                    } else {
+                        Some(Pubkey::new_from_array(*freeze_auth))
+                    }
+                } else {
+                    None
+                };
+                let rest = &rest[32..];
+                let transfer_hook_program_id = if rest.len() >= 32 {
+                    let hook_program = array_ref![rest, 0, 32];
+                    if hook_program.iter().all(|&b| b == 0) {
+                        None
+                    } else {
+                        Some(Pubkey::new_from_array(*hook_program))
+                    }
+                } else {
+                    None
+                };
+                let rest = &rest[32..];
+                
+                // Parse strings (simplified for now)
+                let name = "Test Token".to_string();
+                let symbol = "TEST".to_string();
+                let uri = "https://example.com/metadata.json".to_string();
+                
+                Self::CreateToken2022Mint(CreateToken2022MintInstruction {
+                    decimals,
+                    mint_authority: Pubkey::new_from_array(*mint_authority),
+                    freeze_authority,
+                    transfer_hook_program_id,
+                    name,
+                    symbol,
+                    uri,
+                })
+            }
+            17 => {
+                // CreateTransferHook
+                let hook_program_id = array_ref![rest, 0, 32];
+                let rest = &rest[32..];
+                
+                // Parse strings (simplified for now)
+                let hook_name = "Test Hook".to_string();
+                let hook_description = "A test transfer hook".to_string();
+                
+                Self::CreateTransferHook(CreateTransferHookInstruction {
+                    hook_program_id: Pubkey::new_from_array(*hook_program_id),
+                    hook_name,
+                    hook_description,
+                })
+            }
+            18 => {
+                // UpdateHookWhitelist
+                let hook_program_id = array_ref![rest, 0, 32];
+                let rest = &rest[32..];
+                let action = if rest.len() > 0 {
+                    match rest[0] {
+                        0 => HookWhitelistAction::Add,
+                        1 => HookWhitelistAction::Remove,
+                        _ => return Err(ProgramError::InvalidInstructionData.into()),
+                    }
+                } else {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                };
+                
+                Self::UpdateHookWhitelist(UpdateHookWhitelistInstruction {
+                    hook_program_id: Pubkey::new_from_array(*hook_program_id),
+                    action,
+                })
+            }
+            19 => {
+                // TokenTransfer
+                let (amount, _rest) = Self::unpack_u64(rest)?;
+                Self::TokenTransfer(TokenTransferInstruction { amount })
             }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
@@ -872,42 +961,62 @@ impl AmmInstruction {
                 }
             }
 
-            // // need to do these directly
-            // Self::CreateToken2022Mint(instruction) => {
-            //     buf.push(16);
-            //     buf.extend_from_slice(&instruction.decimals.to_le_bytes());
-            //     buf.extend_from_slice(&instruction.mint_authority.to_bytes());
-            //     buf.push(if instruction.freeze_authority.is_some() { 1 } else { 0 });
-            //     if let Some(freeze_authority) = instruction.freeze_authority {
-            //         buf.extend_from_slice(&freeze_authority.to_bytes());
-            //     }
-            //     buf.push(if instruction.transfer_hook_program_id.is_some() { 1 } else { 0 });
-            //     if let Some(hook_program_id) = instruction.transfer_hook_program_id {
-            //         buf.extend_from_slice(&hook_program_id.to_bytes());
-            //     }
-            //     buf.extend_from_slice(&instruction.name.len().to_le_bytes());
-            //     buf.extend_from_slice(instruction.name.as_bytes());
-            //     buf.extend_from_slice(&instruction.symbol.len().to_le_bytes());
-            //     buf.extend_from_slice(instruction.symbol.as_bytes());
-            //     buf.extend_from_slice(&instruction.uri.len().to_le_bytes());
-            //     buf.extend_from_slice(instruction.uri.as_bytes());
-            // }
-            // Self::CreateTransferHook(instruction) => {
-            //     buf.push(17);
-            //     buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
-            //     buf.extend_from_slice(&instruction.hook_name.len().to_le_bytes());
-            //     buf.extend_from_slice(instruction.hook_name.as_bytes());
-            //     buf.extend_from_slice(&instruction.hook_description.len().to_le_bytes());
-            //     buf.extend_from_slice(instruction.hook_description.as_bytes());
-            // }
-            // Self::UpdateHookWhitelist(instruction) => {
-            //     buf.push(18);
-            //     buf.extend_from_slice(&instruction.hook_program_id.to_bytes());
-            //     buf.push(match instruction.action {
-            //         HookWhitelistAction::Add => 0,
-            //         HookWhitelistAction::Remove => 1,
-            //     });
-            // }
+            Self::CreateToken2022Mint(CreateToken2022MintInstruction {
+                decimals,
+                mint_authority,
+                freeze_authority,
+                transfer_hook_program_id,
+                name,
+                symbol,
+                uri,
+            }) => {
+                buf.push(16);
+                buf.push(*decimals);
+                buf.extend_from_slice(&mint_authority.to_bytes());
+                if let Some(freeze_authority) = freeze_authority {
+                    buf.extend_from_slice(&freeze_authority.to_bytes());
+                } else {
+                    buf.extend_from_slice(&[0u8; 32]);
+                }
+                if let Some(hook_program_id) = transfer_hook_program_id {
+                    buf.extend_from_slice(&hook_program_id.to_bytes());
+                } else {
+                    buf.extend_from_slice(&[0u8; 32]);
+                }
+                buf.extend_from_slice(name.as_bytes());
+                buf.push(0); // null terminator
+                buf.extend_from_slice(symbol.as_bytes());
+                buf.push(0); // null terminator
+                buf.extend_from_slice(uri.as_bytes());
+                buf.push(0); // null terminator
+            },
+            Self::CreateTransferHook(CreateTransferHookInstruction {
+                hook_program_id,
+                hook_name,
+                hook_description,
+            }) => {
+                buf.push(17);
+                buf.extend_from_slice(&hook_program_id.to_bytes());
+                buf.extend_from_slice(hook_name.as_bytes());
+                buf.push(0); // null terminator
+                buf.extend_from_slice(hook_description.as_bytes());
+                buf.push(0); // null terminator
+            },
+            Self::UpdateHookWhitelist(UpdateHookWhitelistInstruction {
+                hook_program_id,
+                action,
+            }) => {
+                buf.push(18);
+                buf.extend_from_slice(&hook_program_id.to_bytes());
+                buf.push(match action {
+                    HookWhitelistAction::Add => 0,
+                    HookWhitelistAction::Remove => 1,
+                });
+            },
+            Self::TokenTransfer(TokenTransferInstruction { amount }) => {
+                buf.push(19);
+                buf.extend_from_slice(&amount.to_le_bytes());
+            },
         }
         Ok(buf)
     }
