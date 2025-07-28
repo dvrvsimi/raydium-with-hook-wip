@@ -11,22 +11,11 @@ use solana_program::{
     pubkey::Pubkey,
     rent::Rent,
     sysvar::Sysvar,
-    system_instruction,
     program::invoke_signed,
     msg,
 };
-use spl_token_2022::extension::{
-    StateWithExtensions, transfer_hook::TransferHook, StateWithExtensionsMut,
-};
-use spl_token_2022::extension::BaseStateWithExtensions;
-use spl_token_2022::extension::BaseStateWithExtensionsMut;
-use spl_token_2022::state::Mint;
-use spl_transfer_hook_interface::instruction::ExecuteInstruction;
-use spl_tlv_account_resolution::state::ExtraAccountMetaList;
-use spl_type_length_value::state::TlvStateBorrowed;
-use spl_token_2022::extension::transfer_hook::TransferHookAccount;
-use spl_transfer_hook_interface::instruction::TransferHookInstruction;
-use solana_program::instruction::{AccountMeta, Instruction};
+use solana_system_interface::instruction as system_instruction;
+
 
 /// Initialize the hook whitelist PDA
 pub fn process_initialize_hook_whitelist(
@@ -45,8 +34,8 @@ pub fn process_initialize_hook_whitelist(
         return Err(ProgramError::MissingRequiredSignature);
     }
     
-    // Verify whitelist account PDA
-    let (expected_whitelist_pda, bump) = find_whitelist_pda(program_id);
+    // Verify whitelist account PDA, bump is not used here
+    let (expected_whitelist_pda, _) = find_whitelist_pda(program_id);
     if whitelist_account_info.key != &expected_whitelist_pda {
         return Err(ProgramError::InvalidAccountData);
     }
@@ -70,9 +59,9 @@ pub fn process_initialize_hook_whitelist(
         program_id,
     );
     
-    let seeds = &[b"hook_whitelist", &[bump]];
-    let signer_seeds = &[&seeds[..]];
-    
+    let seeds: &[&[u8]] = &[b"hook_whitelist"];
+    let signer_seeds = &[seeds];
+
     invoke_signed(
         &create_account_ix,
         &[

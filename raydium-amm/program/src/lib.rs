@@ -88,6 +88,18 @@ pub fn process_instruction(
         crate::instruction::AmmInstruction::TokenTransfer(transfer) => {
             crate::process::token2022::process_token_transfer(program_id, accounts, transfer)
         }
+        crate::instruction::AmmInstruction::TransferHook(transfer_hook) => {
+            crate::process::token2022::process_transfer_hook(program_id, accounts, transfer_hook.amount)
+        }
+        crate::instruction::AmmInstruction::InitializeExtraAccountMetaList(init_meta) => {
+            crate::process::token2022::process_initialize_extra_account_meta_list(program_id, accounts, init_meta)
+        }
+        crate::instruction::AmmInstruction::InitializeHookWhitelist { authority } => {
+            crate::process::whitelist::process_initialize_hook_whitelist(program_id, accounts, authority)
+        }
+        crate::instruction::AmmInstruction::UpdateWhitelistAuthority { new_authority } => {
+            crate::process::whitelist::process_update_whitelist_authority(program_id, accounts, new_authority)
+        }
     }
 }
 

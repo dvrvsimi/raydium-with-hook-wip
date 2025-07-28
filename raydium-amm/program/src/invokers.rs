@@ -20,16 +20,7 @@ use spl_type_length_value::state::TlvStateBorrowed;
 use spl_token_2022::extension::transfer_hook::TransferHookAccount;
 use spl_transfer_hook_interface::instruction::TransferHookInstruction;
 
-// Hardcoded whitelist for demo (replace with on-chain registry for production)
-const HOOK_WHITELIST: &[Pubkey] = &[
-    // Add allowed hook program pubkeys here
-    Pubkey::new_from_array([
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-        0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
-        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-    ]), // TODO: convert base64 to pubkey
-];
+use crate::process::whitelist::is_hook_whitelisted;
 
 /// Helper to get the transfer hook program id from a mint's TLV extension
 fn get_transfer_hook_program_id(mint_account: &AccountInfo) -> Option<Pubkey> {

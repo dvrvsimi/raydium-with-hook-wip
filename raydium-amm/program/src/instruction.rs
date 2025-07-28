@@ -372,8 +372,19 @@ pub enum AmmInstruction {
     // New Token-2022 instructions
     CreateToken2022Mint(CreateToken2022MintInstruction),
     CreateTransferHook(CreateTransferHookInstruction),
-    UpdateHookWhitelist(UpdateHookWhitelistInstruction),
     TokenTransfer(TokenTransferInstruction),
+    TransferHook(TransferHookInstruction),
+    InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction),
+
+    // Whitelist instructions
+    /// Initialize the hook whitelist
+    InitializeHookWhitelist { authority: Pubkey },
+
+    /// Update hook whitelist (add/remove hooks)
+    UpdateHookWhitelist(UpdateHookWhitelistInstruction),
+    
+    /// Update whitelist authority
+    UpdateWhitelistAuthority { new_authority: Pubkey },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -410,6 +421,19 @@ pub enum HookWhitelistAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TokenTransferInstruction {
     pub amount: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TransferHookInstruction {
+    pub amount: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InitializeExtraAccountMetaListInstruction {
+    pub authority: Pubkey,
+    pub extra_accounts: [Pubkey; 3],
 }
 
 impl AmmInstruction {
@@ -719,6 +743,27 @@ impl AmmInstruction {
                 let (amount, _rest) = Self::unpack_u64(rest)?;
                 Self::TokenTransfer(TokenTransferInstruction { amount })
             }
+            20 => {
+                // TransferHook
+                let (amount, _rest) = Self::unpack_u64(rest)?;
+                Self::TransferHook(TransferHookInstruction {
+                    amount,
+                })
+            }
+            21 => {
+                // InitializeExtraAccountMetaList
+                let authority_bytes = array_ref![rest, 0, 32];
+                let rest = &rest[32..];
+                let extra_accounts = [
+                    Pubkey::new_from_array(*array_ref![rest, 0, 32]),
+                    Pubkey::new_from_array(*array_ref![rest, 32, 32]),
+                    Pubkey::new_from_array(*array_ref![rest, 64, 32]),
+                ];
+                Self::InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction {
+                    authority: Pubkey::new_from_array(*authority_bytes),
+                    extra_accounts,
+                })
+            }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
     }
@@ -1017,6 +1062,30 @@ impl AmmInstruction {
                 buf.push(19);
                 buf.extend_from_slice(&amount.to_le_bytes());
             },
+            Self::TransferHook(TransferHookInstruction { amount }) => {
+                buf.push(20);
+                buf.extend_from_slice(&amount.to_le_bytes());
+            },
+            Self::InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction {
+                authority,
+                extra_accounts,
+            }) => {
+                buf.push(21);
+                buf.extend_from_slice(&authority.to_bytes());
+                for account in extra_accounts {
+                    buf.extend_from_slice(&account.to_bytes());
+                }
+            },
+
+            Self::InitializeHookWhitelist { authority } => {
+                buf.push(22);
+                buf.extend_from_slice(&authority.to_bytes());
+            },
+            Self::UpdateWhitelistAuthority { new_authority } => {
+                buf.push(23);
+                buf.extend_from_slice(&new_authority.to_bytes());
+            },
+
         }
         Ok(buf)
     }
