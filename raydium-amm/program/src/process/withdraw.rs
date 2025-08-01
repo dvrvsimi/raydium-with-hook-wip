@@ -347,6 +347,7 @@ pub fn process_withdraw(
         // Transfer tokens from AMM vaults to user
         // For Token-2022 support, we need to pass the mint accounts
         Invokers::token_transfer_with_authority(
+            program_id,
             token_program_info.clone(),
             amm_coin_vault_info.clone(),
             user_dest_coin_info.clone(),
@@ -359,6 +360,7 @@ pub fn process_withdraw(
         )?;
 
         Invokers::token_transfer_with_authority(
+            program_id,
             token_program_info.clone(),
             amm_pc_vault_info.clone(),
             user_dest_pc_info.clone(),

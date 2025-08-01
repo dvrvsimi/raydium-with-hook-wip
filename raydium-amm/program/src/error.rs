@@ -216,6 +216,15 @@ pub enum AmmError {
     /// Whitelist Full
     #[error("Whitelist is full (max 100 hooks)")]
     WhitelistFull,
+    /// Transfer hook error
+    #[error("Transfer hook error")]
+    TransferHookError,
+    /// Invalid whitelist account
+    #[error("Invalid whitelist account")]
+    InvalidWhitelistAccount,
+    /// Invalid system program
+    #[error("Invalid system program")]
+    InvalidSystemProgram,
 }
 
 impl From<AmmError> for ProgramError {
@@ -299,6 +308,9 @@ impl AmmError {
             AmmError::InitLpAmountTooLess => msg!("Error: Init lp amount is too less(Because 10**lp_decimals amount lp will be locked)"),
             AmmError::TransferHookNotWhitelisted => msg!("Error: Transfer hook program not whitelisted"),
             AmmError::WhitelistFull => msg!("Error: Whitelist is full (max 100 hooks)"),
+            AmmError::TransferHookError => msg!("Error: Transfer hook error"),
+            AmmError::InvalidWhitelistAccount => msg!("Error: Invalid whitelist account"),
+            AmmError::InvalidSystemProgram => msg!("Error: Invalid system program"),
             AmmError::UnknownAmmError => msg!("Error: UnknownAmmError"),
         }
     }

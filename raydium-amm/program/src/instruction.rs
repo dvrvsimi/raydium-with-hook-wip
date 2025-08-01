@@ -373,8 +373,8 @@ pub enum AmmInstruction {
     CreateToken2022Mint(CreateToken2022MintInstruction),
     CreateTransferHook(CreateTransferHookInstruction),
     TokenTransfer(TokenTransferInstruction),
-    TransferHook(TransferHookInstruction),
-    InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction),
+    // TransferHook instruction removed - use SPL Transfer Hook Interface instead
+    InitializeExtraAccountMetaList(Vec<spl_tlv_account_resolution::account::ExtraAccountMeta>),
 
     // Whitelist instructions
     /// Initialize the hook whitelist
@@ -423,18 +423,9 @@ pub struct TokenTransferInstruction {
     pub amount: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TransferHookInstruction {
-    pub amount: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct InitializeExtraAccountMetaListInstruction {
-    pub authority: Pubkey,
-    pub extra_accounts: [Pubkey; 3],
-}
+// Note: TransferHookInstruction removed - use SPL Transfer Hook Interface instead
+// The SPL Transfer Hook Interface provides the Execute instruction with discriminator [105, 37, 101, 197, 75, 251, 102, 26]
+// We should use spl_transfer_hook_interface::Execute instead of creating our own
 
 impl AmmInstruction {
     /// Unpacks a byte buffer into a [AmmInstruction](enum.AmmInstruction.html).
@@ -689,10 +680,26 @@ impl AmmInstruction {
                 };
                 let rest = &rest[32..];
                 
-                // Parse strings (simplified for now)
-                let name = "Test Token".to_string();
-                let symbol = "TEST".to_string();
-                let uri = "https://example.com/metadata.json".to_string();
+                // Parse strings with proper length handling
+                let (name_len, rest) = Self::unpack_u8(rest)?;
+                if rest.len() < name_len as usize {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let name = String::from_utf8_lossy(&rest[..name_len as usize]).to_string();
+                let rest = &rest[name_len as usize..];
+                
+                let (symbol_len, rest) = Self::unpack_u8(rest)?;
+                if rest.len() < symbol_len as usize {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let symbol = String::from_utf8_lossy(&rest[..symbol_len as usize]).to_string();
+                let rest = &rest[symbol_len as usize..];
+                
+                let (uri_len, rest) = Self::unpack_u8(rest)?;
+                if rest.len() < uri_len as usize {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let uri = String::from_utf8_lossy(&rest[..uri_len as usize]).to_string();
                 
                 Self::CreateToken2022Mint(CreateToken2022MintInstruction {
                     decimals,
@@ -709,9 +716,19 @@ impl AmmInstruction {
                 let hook_program_id = array_ref![rest, 0, 32];
                 let rest = &rest[32..];
                 
-                // Parse strings (simplified for now)
-                let hook_name = "Test Hook".to_string();
-                let hook_description = "A test transfer hook".to_string();
+                // Parse strings with proper length handling
+                let (hook_name_len, rest) = Self::unpack_u8(rest)?;
+                if rest.len() < hook_name_len as usize {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let hook_name = String::from_utf8_lossy(&rest[..hook_name_len as usize]).to_string();
+                let rest = &rest[hook_name_len as usize..];
+                
+                let (hook_description_len, rest) = Self::unpack_u8(rest)?;
+                if rest.len() < hook_description_len as usize {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let hook_description = String::from_utf8_lossy(&rest[..hook_description_len as usize]).to_string();
                 
                 Self::CreateTransferHook(CreateTransferHookInstruction {
                     hook_program_id: Pubkey::new_from_array(*hook_program_id),
@@ -744,25 +761,34 @@ impl AmmInstruction {
                 Self::TokenTransfer(TokenTransferInstruction { amount })
             }
             20 => {
-                // TransferHook
-                let (amount, _rest) = Self::unpack_u64(rest)?;
-                Self::TransferHook(TransferHookInstruction {
-                    amount,
-                })
+                // TransferHook instruction removed - use SPL Transfer Hook Interface instead
+                return Err(ProgramError::InvalidInstructionData.into());
             }
             21 => {
                 // InitializeExtraAccountMetaList
-                let authority_bytes = array_ref![rest, 0, 32];
-                let rest = &rest[32..];
-                let extra_accounts = [
-                    Pubkey::new_from_array(*array_ref![rest, 0, 32]),
-                    Pubkey::new_from_array(*array_ref![rest, 32, 32]),
-                    Pubkey::new_from_array(*array_ref![rest, 64, 32]),
-                ];
-                Self::InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction {
-                    authority: Pubkey::new_from_array(*authority_bytes),
-                    extra_accounts,
-                })
+                // Parse the length first (u32)
+                if rest.len() < 4 {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let length_bytes = array_ref![rest, 0, 4];
+                let length = u32::from_le_bytes(*length_bytes) as usize;
+                let rest = &rest[4..];
+                
+                // Parse ExtraAccountMeta items
+                let mut extra_accounts = Vec::new();
+                let mut current_rest = rest;
+                
+                for _ in 0..length {
+                    if current_rest.len() < 34 { // ExtraAccountMeta is 34 bytes
+                        return Err(ProgramError::InvalidInstructionData.into());
+                    }
+                    let meta_bytes = array_ref![current_rest, 0, 34];
+                    let extra_meta = bytemuck::from_bytes::<spl_tlv_account_resolution::account::ExtraAccountMeta>(meta_bytes);
+                    extra_accounts.push(*extra_meta);
+                    current_rest = &current_rest[34..];
+                }
+                
+                Self::InitializeExtraAccountMetaList(extra_accounts)
             }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
@@ -805,6 +831,20 @@ impl AmmInstruction {
                 .map(u64::from_le_bytes)
                 .ok_or(ProgramError::InvalidInstructionData)?;
             Ok((amount, rest))
+        } else {
+            Err(ProgramError::InvalidInstructionData.into())
+        }
+    }
+
+    fn unpack_u32(input: &[u8]) -> Result<(u32, &[u8]), ProgramError> {
+        if input.len() >= 4 {
+            let (value, rest) = input.split_at(4);
+            let value = value
+                .get(..4)
+                .and_then(|slice| slice.try_into().ok())
+                .map(u32::from_le_bytes)
+                .ok_or(ProgramError::InvalidInstructionData)?;
+            Ok((value, rest))
         } else {
             Err(ProgramError::InvalidInstructionData.into())
         }
@@ -1062,18 +1102,13 @@ impl AmmInstruction {
                 buf.push(19);
                 buf.extend_from_slice(&amount.to_le_bytes());
             },
-            Self::TransferHook(TransferHookInstruction { amount }) => {
-                buf.push(20);
-                buf.extend_from_slice(&amount.to_le_bytes());
-            },
-            Self::InitializeExtraAccountMetaList(InitializeExtraAccountMetaListInstruction {
-                authority,
-                extra_accounts,
-            }) => {
+            // TransferHook instruction removed - use SPL Transfer Hook Interface instead
+            Self::InitializeExtraAccountMetaList(extra_accounts) => {
                 buf.push(21);
-                buf.extend_from_slice(&authority.to_bytes());
+                buf.extend_from_slice(&(extra_accounts.len() as u32).to_le_bytes());
                 for account in extra_accounts {
-                    buf.extend_from_slice(&account.to_bytes());
+                    let account_bytes = bytemuck::bytes_of(account);
+                    buf.extend_from_slice(account_bytes);
                 }
             },
 

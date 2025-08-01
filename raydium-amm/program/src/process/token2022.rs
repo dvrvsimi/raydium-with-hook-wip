@@ -4,6 +4,7 @@ use solana_system_interface::instruction as system_instruction;
 use crate::{
     error::AmmError,
     instruction::{CreateToken2022MintInstruction, CreateTransferHookInstruction, UpdateHookWhitelistInstruction, TokenTransferInstruction},
+    state::{find_whitelist_pda, HookWhitelist},
 };
 
 
@@ -21,6 +22,8 @@ use spl_token_2022::{
     extension::{ExtensionType, BaseStateWithExtensions, StateWithExtensions},
     state::Mint,
 };
+use solana_program::program_pack::Pack;
+use spl_tlv_account_resolution::state::ExtraAccountMetaList;
 
 
 pub fn process_create_token2022_mint(
@@ -319,71 +322,18 @@ pub fn process_token_transfer(
     Ok(())
 }
 
-/// Execute transfer hook - called by Token-2022 during transfers
-pub fn process_transfer_hook(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    amount: u64,
-) -> ProgramResult {
-    let account_info_iter = &mut accounts.iter();
-    
-    // Get required accounts for transfer hook execution
-    let source_token = next_account_info(account_info_iter)?;
-    let mint = next_account_info(account_info_iter)?;
-    let destination_token = next_account_info(account_info_iter)?;
-    let authority = next_account_info(account_info_iter)?;
-    let token_program = next_account_info(account_info_iter)?;
-    
-    // Validate token program
-    if *token_program.key != spl_token_2022::id() {
-        return Err(AmmError::InvalidSplTokenProgram.into());
-    }
-    
-    // Check if transfer is in progress using TransferHookAccount extension
-    let source_data = source_token.try_borrow_data()?;
-    let source_state = StateWithExtensions::<spl_token_2022::state::Account>::unpack(&source_data)?;
-    
-    // Verify transfer hook account extension
-    let transfer_hook_account = source_state.get_extension::<spl_token_2022::extension::transfer_hook_account::TransferHookAccount>()?;
-    if transfer_hook_account.transferring {
-        return Err(AmmError::TransferHookError.into());
-    }
-    
-    // Get whitelist account
-    let whitelist_pda = find_whitelist_pda(program_id);
-    let whitelist_account = next_account_info(account_info_iter)?;
-    
-    if whitelist_account.key != &whitelist_pda {
-        return Err(AmmError::InvalidWhitelistAccount.into());
-    }
-    
-    // Read whitelist data
-    let whitelist_data = whitelist_account.try_borrow_data()?;
-    let whitelist = HookWhitelist::unpack_from_slice(&whitelist_data)?;
-    
-    // Check if this program is in the whitelist
-    let current_program = *program_id;
-    if !whitelist.hooks.contains(&current_program) {
-        return Err(AmmError::TransferHookNotWhitelisted.into());
-    }
-    
-    msg!("Transfer hook executed successfully");
-    msg!("Amount: {}", amount);
-    msg!("From: {}", source_token.key);
-    msg!("To: {}", destination_token.key);
-    
-    Ok(())
-}
+// TransferHook processing removed - use SPL Transfer Hook Interface instead
 
 /// Initialize extra account meta list for transfer hook
 pub fn process_initialize_extra_account_meta_list(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    instruction: InitializeExtraAccountMetaListInstruction,
+    extra_account_metas: Vec<spl_tlv_account_resolution::account::ExtraAccountMeta>,
 ) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
     
     let extra_account_meta_list = next_account_info(account_info_iter)?;
+    let mint = next_account_info(account_info_iter)?;
     let authority = next_account_info(account_info_iter)?;
     let system_program = next_account_info(account_info_iter)?;
     
@@ -392,12 +342,12 @@ pub fn process_initialize_extra_account_meta_list(
         return Err(AmmError::InvalidSignAccount.into());
     }
     
-    if *system_program.key != solana_system_program::id() {
+    if *system_program.key != solana_program::system_program::id() {
         return Err(AmmError::InvalidSystemProgram.into());
     }
     
     // Create extra account meta list account
-    let space = spl_transfer_hook_interface::get_extra_account_meta_list_size(&instruction.extra_accounts);
+    let space = ExtraAccountMetaList::size_of(extra_account_metas.len())?;
     let lamports = Rent::get()?.minimum_balance(space);
     
     let create_account_ix = system_instruction::create_account(
@@ -413,19 +363,23 @@ pub fn process_initialize_extra_account_meta_list(
         &[authority.clone(), extra_account_meta_list.clone(), system_program.clone()],
     )?;
     
-    // Initialize the extra account meta list
-    let init_ix = InitializeExtraAccountMetaListInstruction {
-        extra_accounts: instruction.extra_accounts,
-    };
+    // Initialize the extra account meta list using spl_transfer_hook_interface
+    let init_ix = spl_transfer_hook_interface::instruction::initialize_extra_account_meta_list(
+        program_id,
+        extra_account_meta_list.key,
+        mint.key,
+        authority.key,
+        &extra_account_metas,
+    );
     
     invoke(
-        &init_ix.instruction(),
-        &[extra_account_meta_list.clone()],
+        &init_ix,
+        &[extra_account_meta_list.clone(), mint.clone(), authority.clone(), system_program.clone()],
     )?;
     
     msg!("Extra account meta list initialized successfully");
     msg!("Authority: {}", authority.key);
-    msg!("Extra accounts: {:?}", instruction.extra_accounts);
+    msg!("Extra accounts: {:?}", extra_account_metas);
     
     Ok(())
 }

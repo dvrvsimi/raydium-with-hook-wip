@@ -69,6 +69,7 @@ pub fn process_withdraw_srm(
 
     // Transfer SRM tokens
     Invokers::token_transfer_with_authority(
+        program_id,
         token_program_info.clone(),
         amm_srm_vault_info.clone(),
         user_dest_srm_info.clone(),

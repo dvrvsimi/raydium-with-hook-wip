@@ -88,9 +88,7 @@ pub fn process_instruction(
         crate::instruction::AmmInstruction::TokenTransfer(transfer) => {
             crate::process::token2022::process_token_transfer(program_id, accounts, transfer)
         }
-        crate::instruction::AmmInstruction::TransferHook(transfer_hook) => {
-            crate::process::token2022::process_transfer_hook(program_id, accounts, transfer_hook.amount)
-        }
+        // TransferHook instruction removed - use SPL Transfer Hook Interface instead
         crate::instruction::AmmInstruction::InitializeExtraAccountMetaList(init_meta) => {
             crate::process::token2022::process_initialize_extra_account_meta_list(program_id, accounts, init_meta)
         }
