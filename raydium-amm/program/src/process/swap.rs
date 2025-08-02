@@ -304,6 +304,7 @@ pub fn process_swap_base_in(
             }
             // deposit source coin to amm_coin_vault
             Invokers::token_transfer(
+                program_id,
                 token_program_info.clone(),
                 user_source_info.clone(),
                 amm_coin_vault_info.clone(),
@@ -314,6 +315,7 @@ pub fn process_swap_base_in(
             )?;
             // withdraw amm_pc_vault to destination pc
             Invokers::token_transfer_with_authority(
+                program_id,
                 token_program_info.clone(),
                 amm_pc_vault_info.clone(),
                 user_destination_info.clone(),
@@ -402,16 +404,18 @@ pub fn process_swap_base_in(
             }
             // deposit source pc to amm_pc_vault
             Invokers::token_transfer(
+                program_id,
                 token_program_info.clone(),
                 user_source_info.clone(),
                 amm_pc_vault_info.clone(),
                 user_source_owner.clone(),
-                swap.amount_in,
+                swap_amount_out,
                 amm_pc_mint_info.clone(),
                 &[],
             )?;
             // withdraw amm_coin_vault to destination coin
             Invokers::token_transfer_with_authority(
+                program_id,
                 token_program_info.clone(),
                 amm_coin_vault_info.clone(),
                 user_destination_info.clone(),
@@ -728,6 +732,7 @@ pub fn process_swap_base_out(
             }
             // deposit source coin to amm_coin_vault
             Invokers::token_transfer(
+                program_id,
                 token_program_info.clone(),
                 user_source_info.clone(),
                 amm_coin_vault_info.clone(),
@@ -738,6 +743,7 @@ pub fn process_swap_base_out(
             )?;
             // withdraw amm_pc_vault to destination pc
             Invokers::token_transfer_with_authority(
+                program_id,
                 token_program_info.clone(),
                 amm_pc_vault_info.clone(),
                 user_destination_info.clone(),
@@ -826,6 +832,7 @@ pub fn process_swap_base_out(
 
             // deposit source pc to amm_pc_vault
             Invokers::token_transfer(
+                program_id,
                 token_program_info.clone(),
                 user_source_info.clone(),
                 amm_pc_vault_info.clone(),
@@ -836,6 +843,7 @@ pub fn process_swap_base_out(
             )?;
             // withdraw amm_coin_vault to destination coin
             Invokers::token_transfer_with_authority(
+                program_id,
                 token_program_info.clone(),
                 amm_coin_vault_info.clone(),
                 user_destination_info.clone(),

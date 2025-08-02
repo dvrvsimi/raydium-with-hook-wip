@@ -1015,6 +1015,104 @@ impl GetSwapBaseOutData {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HookWhitelist {
+    pub authority: Pubkey,
+    pub hooks: Vec<Pubkey>, // List of approved hook program IDs
+}
+
+impl HookWhitelist {
+    pub const LEN: usize = 32 + 4 + (32 * 100); // authority + vec len + max 100 hooks
+    
+    pub fn add_hook(&mut self, hook_program_id: Pubkey) -> Result<(), AmmError> {
+        if !self.hooks.contains(&hook_program_id) {
+            self.hooks.push(hook_program_id);
+        }
+        Ok(())
+    }
+    
+    pub fn remove_hook(&mut self, hook_program_id: &Pubkey) -> Result<(), AmmError> {
+        if let Some(pos) = self.hooks.iter().position(|x| x == hook_program_id) {
+            self.hooks.remove(pos);
+        }
+        Ok(())
+    }
+    
+    pub fn is_hook_whitelisted(&self, hook_program_id: &Pubkey) -> bool {
+        self.hooks.contains(hook_program_id)
+    }
+}
+
+impl IsInitialized for HookWhitelist {
+    fn is_initialized(&self) -> bool {
+        self.authority != Pubkey::default()
+    }
+}
+
+impl Sealed for HookWhitelist {}
+impl Pack for HookWhitelist {
+    const LEN: usize = HookWhitelist::LEN;
+
+    fn pack_into_slice(&self, output: &mut [u8]) {
+        let data = self;
+        let output = array_mut_ref![output, 0, HookWhitelist::LEN];
+        
+        // Pack authority
+        let (authority_out, rest) = mut_array_refs![output, 32, HookWhitelist::LEN - 32];
+        authority_out.copy_from_slice(&data.authority.to_bytes());
+        
+        // Pack hooks vector
+        let hooks_len = data.hooks.len().min(100); // Cap at 100 hooks
+        let hooks_len_bytes = (hooks_len as u32).to_le_bytes();
+        rest[..4].copy_from_slice(&hooks_len_bytes);
+        
+        // Pack hook program IDs
+        for (i, hook) in data.hooks.iter().take(100).enumerate() {
+            let start = 4 + (i * 32);
+            let end = start + 32;
+            if end <= rest.len() {
+                rest[start..end].copy_from_slice(&hook.to_bytes());
+            }
+        }
+    }
+
+    fn unpack_from_slice(input: &[u8]) -> Result<HookWhitelist, ProgramError> {
+        let input = array_ref![input, 0, HookWhitelist::LEN];
+        
+        // Unpack authority
+        let (authority_bytes, rest) = array_refs![input, 32, HookWhitelist::LEN - 32];
+        let authority = Pubkey::new_from_array(*authority_bytes);
+        
+        // Unpack hooks vector
+        let hooks_len_bytes = array_ref![rest, 0, 4];
+        let hooks_len = u32::from_le_bytes(*hooks_len_bytes) as usize;
+        let hooks_len = hooks_len.min(100); // Cap at 100 hooks
+        
+        let mut hooks = Vec::new();
+        for i in 0..hooks_len {
+            let start = 4 + (i * 32);
+            let end = start + 32;
+            if end <= rest.len() {
+                let hook_bytes = array_ref![rest, start, 32];
+                hooks.push(Pubkey::new_from_array(*hook_bytes));
+            }
+        }
+        
+        Ok(HookWhitelist {
+            authority,
+            hooks,
+        })
+    }
+}
+
+pub fn find_whitelist_pda(program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[b"hook_whitelist"],
+        program_id,
+    )
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
