@@ -790,6 +790,26 @@ impl AmmInstruction {
                 
                 Self::InitializeExtraAccountMetaList(extra_accounts)
             }
+            22 => {
+                // InitializeHookWhitelist
+                if rest.len() < 32 {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let authority = array_ref![rest, 0, 32];
+                Self::InitializeHookWhitelist { 
+                    authority: Pubkey::new_from_array(*authority) 
+                }
+            }
+            23 => {
+                // UpdateWhitelistAuthority
+                if rest.len() < 32 {
+                    return Err(ProgramError::InvalidInstructionData.into());
+                }
+                let new_authority = array_ref![rest, 0, 32];
+                Self::UpdateWhitelistAuthority { 
+                    new_authority: Pubkey::new_from_array(*new_authority) 
+                }
+            }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
     }
@@ -1068,12 +1088,12 @@ impl AmmInstruction {
                 } else {
                     buf.extend_from_slice(&[0u8; 32]);
                 }
+                buf.push(name.len() as u8);
                 buf.extend_from_slice(name.as_bytes());
-                buf.push(0); // null terminator
+                buf.push(symbol.len() as u8);
                 buf.extend_from_slice(symbol.as_bytes());
-                buf.push(0); // null terminator
+                buf.push(uri.len() as u8);
                 buf.extend_from_slice(uri.as_bytes());
-                buf.push(0); // null terminator
             },
             Self::CreateTransferHook(CreateTransferHookInstruction {
                 hook_program_id,
@@ -1082,10 +1102,10 @@ impl AmmInstruction {
             }) => {
                 buf.push(17);
                 buf.extend_from_slice(&hook_program_id.to_bytes());
+                buf.push(hook_name.len() as u8);
                 buf.extend_from_slice(hook_name.as_bytes());
-                buf.push(0); // null terminator
+                buf.push(hook_description.len() as u8);
                 buf.extend_from_slice(hook_description.as_bytes());
-                buf.push(0); // null terminator
             },
             Self::UpdateHookWhitelist(UpdateHookWhitelistInstruction {
                 hook_program_id,
@@ -1111,7 +1131,6 @@ impl AmmInstruction {
                     buf.extend_from_slice(account_bytes);
                 }
             },
-
             Self::InitializeHookWhitelist { authority } => {
                 buf.push(22);
                 buf.extend_from_slice(&authority.to_bytes());

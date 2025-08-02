@@ -1024,8 +1024,12 @@ pub struct HookWhitelist {
 
 impl HookWhitelist {
     pub const LEN: usize = 32 + 4 + (32 * 100); // authority + vec len + max 100 hooks
+    pub const MAX_HOOKS: usize = 100;
     
     pub fn add_hook(&mut self, hook_program_id: Pubkey) -> Result<(), AmmError> {
+        if self.hooks.len() >= Self::MAX_HOOKS {
+            return Err(AmmError::InvalidInstruction);
+        }
         if !self.hooks.contains(&hook_program_id) {
             self.hooks.push(hook_program_id);
         }
@@ -1035,8 +1039,10 @@ impl HookWhitelist {
     pub fn remove_hook(&mut self, hook_program_id: &Pubkey) -> Result<(), AmmError> {
         if let Some(pos) = self.hooks.iter().position(|x| x == hook_program_id) {
             self.hooks.remove(pos);
+            Ok(())
+        } else {
+            Err(AmmError::InvalidInstruction)
         }
-        Ok(())
     }
     
     pub fn is_hook_whitelisted(&self, hook_program_id: &Pubkey) -> bool {
