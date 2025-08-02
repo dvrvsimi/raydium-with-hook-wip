@@ -94,6 +94,7 @@ pub fn process_withdrawpnl(
     // Transfer PnL tokens
     if coin_pnl > 0 {
         Invokers::token_transfer_with_authority(
+            program_id,
             token_program_info.clone(),
             amm_coin_vault_info.clone(),
             user_dest_coin_info.clone(),
@@ -108,6 +109,7 @@ pub fn process_withdrawpnl(
 
     if pc_pnl > 0 {
         Invokers::token_transfer_with_authority(
+            program_id,
             token_program_info.clone(),
             amm_pc_vault_info.clone(),
             user_dest_pc_info.clone(),

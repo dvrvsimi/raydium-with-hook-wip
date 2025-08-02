@@ -20,16 +20,7 @@ use spl_type_length_value::state::TlvStateBorrowed;
 use spl_token_2022::extension::transfer_hook::TransferHookAccount;
 use spl_transfer_hook_interface::instruction::TransferHookInstruction;
 
-// Hardcoded whitelist for demo (replace with on-chain registry for production)
-const HOOK_WHITELIST: &[Pubkey] = &[
-    // Add allowed hook program pubkeys here
-    Pubkey::new_from_array([
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-        0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
-        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-    ]), // TODO: convert base64 to pubkey
-];
+use crate::process::whitelist::is_hook_whitelisted;
 
 /// Helper to get the transfer hook program id from a mint's TLV extension
 fn get_transfer_hook_program_id(mint_account: &AccountInfo) -> Option<Pubkey> {
@@ -65,12 +56,14 @@ fn try_unset_transferring(account: &AccountInfo) -> Result<(), ProgramError> {
     Ok(())
 }
 
-/// Execute transfer hook for Token 2022 mints
+/// Execute transfer hook for Token 2022 mints with on-chain whitelist validation
 /// 
 /// Expected remaining_accounts order:
-/// 0. ExtraAccountMetaList PDA
-/// 1..N. Additional accounts required by the hook (in order specified by the meta list)
-fn execute_transfer_hook<'a>(
+/// 0. TransferHookWhitelist PDA account
+/// 1. ExtraAccountMetaList PDA
+/// 2..N. Additional accounts required by the hook (in order specified by the meta list)
+pub fn execute_transfer_hook<'a>(
+    program_id: &Pubkey, // Your AMM program ID (for whitelist PDA derivation)
     source: &AccountInfo<'a>,
     mint: &AccountInfo<'a>,
     destination: &AccountInfo<'a>,
@@ -84,10 +77,27 @@ fn execute_transfer_hook<'a>(
         None => return Ok(()), // No hook, continue with normal transfer
     };
 
-    // Security check: ensure hook program is whitelisted
-    if !HOOK_WHITELIST.contains(&hook_program_id) {
-        msg!("Transfer hook program not whitelisted: {}", hook_program_id);
-        return Err(crate::error::AmmError::TransferHookNotWhitelisted.into());
+    // Need at least whitelist and meta list accounts
+    if remaining_accounts.len() < 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let whitelist_account = &remaining_accounts[0];
+    let extra_account_meta_list_info = &remaining_accounts[1];
+
+    // Security check: ensure hook program is whitelisted using on-chain whitelist
+    match is_hook_whitelisted(program_id, whitelist_account, &hook_program_id) {
+        Ok(true) => {
+            msg!("Transfer hook program is whitelisted: {}", hook_program_id);
+        }
+        Ok(false) => {
+            msg!("Transfer hook program not whitelisted: {}", hook_program_id);
+            return Err(crate::error::AmmError::TransferHookNotWhitelisted.into());
+        }
+        Err(e) => {
+            msg!("Error checking whitelist: {:?}", e);
+            return Err(e);
+        }
     }
 
     // Set transferring flag (ignore error if extension doesn't exist)
@@ -102,14 +112,7 @@ fn execute_transfer_hook<'a>(
         &hook_program_id,
     );
 
-    // Ensure we have at least the meta list account
-    if remaining_accounts.is_empty() {
-        let _ = try_unset_transferring(source);
-        return Err(ProgramError::NotEnoughAccountKeys);
-    }
-
-    // First remaining account must be the ExtraAccountMetaList
-    let extra_account_meta_list_info = &remaining_accounts[0];
+    // Verify the ExtraAccountMetaList PDA
     if extra_account_meta_list_info.key != &extra_account_meta_list_pda {
         let _ = try_unset_transferring(source);
         return Err(ProgramError::InvalidAccountData);
@@ -118,9 +121,9 @@ fn execute_transfer_hook<'a>(
     // Build initial account metas and infos for the hook instruction
     let mut account_metas = vec![
         AccountMeta::new(*source.key, false),
-        AccountMeta::new(*mint.key, false),
+        AccountMeta::new_readonly(*mint.key, false),
         AccountMeta::new(*destination.key, false),
-        AccountMeta::new_readonly(*authority.key, false), // authority is readonly for hook?
+        AccountMeta::new_readonly(*authority.key, false), // authority is readonly for hook
         AccountMeta::new_readonly(extra_account_meta_list_pda, false),
     ];
 
@@ -149,17 +152,29 @@ fn execute_transfer_hook<'a>(
         }
     };
 
+    // Skip if no extra accounts needed
     let extra_account_meta_list = match ExtraAccountMetaList::unpack_with_tlv_state::<ExecuteInstruction>(&tlv_state) {
         Ok(list) => list,
         Err(_) => {
+            // If parsing fails, maybe there are no extra accounts - that's okay
+            msg!("No extra account metas found, proceeding with basic accounts");
+            
+            // Create and execute the hook instruction with basic accounts
+            let hook_ix = Instruction {
+                program_id: hook_program_id,
+                accounts: account_metas,
+                data: hook_ix_data,
+            };
+
+            let hook_result = solana_program::program::invoke(&hook_ix, &account_infos);
             let _ = try_unset_transferring(source);
-            return Err(ProgramError::InvalidAccountData);
+            return hook_result;
         }
     };
 
-    // Add extra accounts (starting from index 1, after the meta list)
+    // Add extra accounts (starting from index 2, after whitelist and meta list)
     for (i, meta) in extra_account_meta_list.data().iter().enumerate() {
-        let acc_info = match remaining_accounts.get(i + 1) {
+        let acc_info = match remaining_accounts.get(i + 2) {
             Some(info) => info,
             None => {
                 let _ = try_unset_transferring(source);
@@ -197,14 +212,16 @@ fn execute_transfer_hook<'a>(
     // Execute the hook and handle errors properly
     let hook_result = solana_program::program::invoke(&hook_ix, &account_infos);
     
-    // unset the transferring flag, regardless of hook result
+    // Unset the transferring flag, regardless of hook result
     let _ = try_unset_transferring(source);
     
-    // propagate any hook execution errors
+    // Propagate any hook execution errors
     hook_result?;
 
+    msg!("Transfer hook executed successfully for program: {}", hook_program_id);
     Ok(())
 }
+
 
 pub struct Invokers {}
 
@@ -349,9 +366,11 @@ impl Invokers {
     /// Issue a spl_token `Transfer` instruction with Token 2022 transfer hook support.
     /// 
     /// For Token 2022 mints with transfer hooks, remaining_accounts should contain:
-    /// 0. ExtraAccountMetaList PDA
-    /// 1..N. Additional accounts required by the hook (in order)
+    /// 0. TransferHookWhitelist PDA account
+    /// 1. ExtraAccountMetaList PDA
+    /// 2..N. Additional accounts required by the hook (in order)
     pub fn token_transfer<'a>(
+        program_id: &Pubkey, // Your AMM program ID
         token_program: AccountInfo<'a>,
         source: AccountInfo<'a>,
         destination: AccountInfo<'a>,
@@ -363,6 +382,7 @@ impl Invokers {
         // Only execute transfer hook for Token-2022
         if *token_program.key == spl_token_2022::id() {
             execute_transfer_hook(
+                program_id,
                 &source,
                 &mint,
                 &destination,
@@ -415,9 +435,11 @@ impl Invokers {
     /// Issue a spl_token `Transfer` instruction with authority and Token 2022 transfer hook support.
     /// 
     /// For Token 2022 mints with transfer hooks, remaining_accounts should contain:
-    /// 0. ExtraAccountMetaList PDA
-    /// 1..N. Additional accounts required by the hook (in order)
+    /// 0. TransferHookWhitelist PDA account
+    /// 1. ExtraAccountMetaList PDA
+    /// 2..N. Additional accounts required by the hook (in order)
     pub fn token_transfer_with_authority<'a>(
+        program_id: &Pubkey, // Your AMM program ID
         token_program: AccountInfo<'a>,
         source: AccountInfo<'a>,
         destination: AccountInfo<'a>,
@@ -434,6 +456,7 @@ impl Invokers {
         // Only execute transfer hook for Token-2022
         if *token_program.key == spl_token_2022::id() {
             execute_transfer_hook(
+                program_id,
                 &source,
                 &mint,
                 &destination,
@@ -481,28 +504,6 @@ impl Invokers {
                 signers,
             )
         }
-    }
-
-    pub fn token_set_authority<'a>(
-        token_program: AccountInfo<'a>,
-        account: AccountInfo<'a>, // mint or token account
-        authority: AccountInfo<'a>,
-        new_authority: AccountInfo<'a>,
-        amm_seed: &[u8],
-        authority_nonce: u8,
-        authority_type: spl_token::instruction::AuthorityType,
-    ) -> Result<(), ProgramError> {
-        let authority_signature_seeds = [amm_seed, &[authority_nonce]];
-        let signers = &[&authority_signature_seeds[..]];
-        let ix = spl_token::instruction::set_authority(
-            token_program.key,
-            account.key,
-            Some(new_authority.key),
-            authority_type,
-            authority.key,
-            &[],
-        )?;
-        solana_program::program::invoke_signed(&ix, &[account, authority, token_program], signers)
     }
 
     /// Issue a dex `InitOpenOrders` instruction

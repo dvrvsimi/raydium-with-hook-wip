@@ -9,6 +9,9 @@ pub mod math;
 pub mod process;
 pub mod state;
 
+#[cfg(test)]
+mod tests;
+
 use solana_program::{
     account_info::AccountInfo,
     entrypoint,
@@ -80,7 +83,20 @@ pub fn process_instruction(
             crate::process::token2022::process_create_transfer_hook(program_id, accounts, create_hook)
         }
         crate::instruction::AmmInstruction::UpdateHookWhitelist(update_whitelist) => {
-            crate::process::token2022::process_update_hook_whitelist(program_id, accounts, update_whitelist)
+            crate::process::process_update_hook_whitelist(program_id, accounts, update_whitelist)
+        }
+        crate::instruction::AmmInstruction::TokenTransfer(transfer) => {
+            crate::process::token2022::process_token_transfer(program_id, accounts, transfer)
+        }
+        // TransferHook instruction removed - use SPL Transfer Hook Interface instead
+        crate::instruction::AmmInstruction::InitializeExtraAccountMetaList(init_meta) => {
+            crate::process::token2022::process_initialize_extra_account_meta_list(program_id, accounts, init_meta)
+        }
+        crate::instruction::AmmInstruction::InitializeHookWhitelist { authority } => {
+            crate::process::whitelist::process_initialize_hook_whitelist(program_id, accounts, authority)
+        }
+        crate::instruction::AmmInstruction::UpdateWhitelistAuthority { new_authority } => {
+            crate::process::whitelist::process_update_whitelist_authority(program_id, accounts, new_authority)
         }
     }
 }
