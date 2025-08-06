@@ -49,7 +49,6 @@ spl-transfer-hook-interface = "0.10.0"
 spl-tlv-account-resolution = "0.10.0"
 spl-type-length-value = "0.8.0"
 spl-discriminator = "0.4.0"
-spl-pod = "0.2.0"
 solana-system-interface = "1.0.0"
 spl-token-metadata-interface = "0.7.0"
 

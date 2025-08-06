@@ -15,10 +15,15 @@ use spl_token_2022::extension::BaseStateWithExtensions;
 use spl_token_2022::extension::BaseStateWithExtensionsMut;
 use spl_token_2022::state::Mint;
 use spl_transfer_hook_interface::instruction::ExecuteInstruction;
-use spl_tlv_account_resolution::state::ExtraAccountMetaList;
+use spl_tlv_account_resolution::{
+    state::ExtraAccountMetaList,
+    account::ExtraAccountMeta,
+    seeds::Seed,
+};
 use spl_type_length_value::state::TlvStateBorrowed;
 use spl_token_2022::extension::transfer_hook::TransferHookAccount;
 use spl_transfer_hook_interface::instruction::TransferHookInstruction;
+use spl_discriminator::SplDiscriminate;
 
 use crate::process::whitelist::is_hook_whitelisted;
 
@@ -54,6 +59,92 @@ fn try_unset_transferring(account: &AccountInfo) -> Result<(), ProgramError> {
     }
     // If extension doesn't exist, continue
     Ok(())
+}
+
+/// Check if a hook program is supported for auto-initialization
+fn is_hook_supported_for_auto_init(hook_program_id: &Pubkey) -> bool {
+    // Add known hook program IDs that support auto-initialization
+    // For now, we'll support the whitelist-transfer-hook program
+    let supported_hooks = [
+        // Add your whitelist-transfer-hook program ID here
+        // "YourWhitelistTransferHookProgramID",
+    ];
+    
+    supported_hooks.contains(hook_program_id)
+}
+
+/// Get default extra account metas for a supported hook program
+fn get_default_extra_account_metas(hook_program_id: &Pubkey) -> Result<Vec<ExtraAccountMeta>, ProgramError> {
+    // For whitelist-transfer-hook, the default extra account is the whitelist PDA
+    let whitelist_meta = ExtraAccountMeta::new_with_seeds(
+        &[
+            Seed::Literal {
+                bytes: b"whitelist".to_vec(),
+            },
+        ],
+        false, // is_signer
+        false, // is_writable
+    )?;
+    
+    Ok(vec![whitelist_meta])
+}
+
+/// Auto-initialize the extra account meta list for a hook program
+fn auto_initialize_meta_list<'a>(
+    hook_program_id: &Pubkey,
+    mint: &AccountInfo<'a>,
+    meta_list_account: &AccountInfo<'a>,
+) -> Result<(), ProgramError> {
+    // Check if hook program is supported for auto-initialization
+    if !is_hook_supported_for_auto_init(hook_program_id) {
+        return Err(crate::error::AmmError::HookProgramNotSupportedForAutoInit.into());
+    }
+    
+    // Get default extra account metas for this hook program
+    let extra_account_metas = get_default_extra_account_metas(hook_program_id)?;
+    
+    // Calculate required account size
+    let account_size = ExtraAccountMetaList::size_of(extra_account_metas.len())?;
+    
+    // Check if account has enough space
+    let mut data = meta_list_account.try_borrow_mut_data()?;
+    if data.len() < account_size {
+        return Err(crate::error::AmmError::HookMetaListAutoInitFailed.into());
+    }
+    
+    // Initialize the meta list
+    ExtraAccountMetaList::init::<ExecuteInstruction>(
+        &mut data,
+        &extra_account_metas,
+    )?;
+    
+    msg!("Auto-initialized meta list for hook program: {}", hook_program_id);
+    Ok(())
+}
+
+/// Check if meta list account is valid and initialized
+fn is_meta_list_valid<'a>(
+    meta_list_account: &AccountInfo<'a>,
+    hook_program_id: &Pubkey,
+) -> Result<bool, ProgramError> {
+    let data = meta_list_account.try_borrow_data()?;
+    
+    // Check if account is empty (not initialized)
+    if data.is_empty() {
+        return Ok(false);
+    }
+    
+    // Try to parse the TLV state
+    let tlv_state = match TlvStateBorrowed::unpack(&data) {
+        Ok(state) => state,
+        Err(_) => return Ok(false), // Invalid TLV state
+    };
+    
+    // Try to unpack the extra account meta list
+    match ExtraAccountMetaList::unpack_with_tlv_state::<ExecuteInstruction>(&tlv_state) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false), // Invalid meta list
+    }
 }
 
 /// Execute transfer hook for Token 2022 mints with on-chain whitelist validation
@@ -116,6 +207,21 @@ pub fn execute_transfer_hook<'a>(
     if extra_account_meta_list_info.key != &extra_account_meta_list_pda {
         let _ = try_unset_transferring(source);
         return Err(ProgramError::InvalidAccountData);
+    }
+
+    // Check if meta list is valid and auto-initialize if needed
+    let is_valid = is_meta_list_valid(extra_account_meta_list_info, &hook_program_id)?;
+    if !is_valid {
+        msg!("Meta list is invalid or not initialized, attempting auto-initialization...");
+        match auto_initialize_meta_list(&hook_program_id, mint, extra_account_meta_list_info) {
+            Ok(_) => {
+                msg!("Auto-initialization successful");
+            }
+            Err(e) => {
+                let _ = try_unset_transferring(source);
+                return Err(e);
+            }
+        }
     }
 
     // Build initial account metas and infos for the hook instruction

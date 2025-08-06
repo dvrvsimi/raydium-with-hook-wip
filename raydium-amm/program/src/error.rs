@@ -214,7 +214,7 @@ pub enum AmmError {
     #[error("Transfer hook program not whitelisted")]
     TransferHookNotWhitelisted,
     /// Whitelist Full
-    #[error("Whitelist is full (max 100 hooks)")]
+    #[error("Whitelist is full (max 32 hooks)")]
     WhitelistFull,
     /// Transfer hook error
     #[error("Transfer hook error")]
@@ -225,6 +225,18 @@ pub enum AmmError {
     /// Invalid system program
     #[error("Invalid system program")]
     InvalidSystemProgram,
+    /// Hook meta list not found
+    #[error("Hook meta list not found")]
+    HookMetaListNotFound,
+    /// Hook meta list invalid
+    #[error("Hook meta list invalid")]
+    HookMetaListInvalid,
+    /// Auto-initialization failed
+    #[error("Auto-initialization of hook meta list failed")]
+    HookMetaListAutoInitFailed,
+    /// Hook program not supported for auto-initialization
+    #[error("Hook program not supported for auto-initialization")]
+    HookProgramNotSupportedForAutoInit,
 }
 
 impl From<AmmError> for ProgramError {
@@ -311,6 +323,10 @@ impl AmmError {
             AmmError::TransferHookError => msg!("Error: Transfer hook error"),
             AmmError::InvalidWhitelistAccount => msg!("Error: Invalid whitelist account"),
             AmmError::InvalidSystemProgram => msg!("Error: Invalid system program"),
+            AmmError::HookMetaListNotFound => msg!("Error: Hook meta list not found"),
+            AmmError::HookMetaListInvalid => msg!("Error: Hook meta list invalid"),
+            AmmError::HookMetaListAutoInitFailed => msg!("Error: Auto-initialization of hook meta list failed"),
+            AmmError::HookProgramNotSupportedForAutoInit => msg!("Error: Hook program not supported for auto-initialization"),
             AmmError::UnknownAmmError => msg!("Error: UnknownAmmError"),
         }
     }

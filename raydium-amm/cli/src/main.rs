@@ -6,13 +6,24 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     transaction::Transaction,
     instruction::Instruction,
-    system_instruction,
 };
-use spl_token::instruction as token_instruction;
+use solana_sdk::system_instruction;
 use spl_associated_token_account::instruction as ata_instruction;
 use std::str::FromStr;
-use anyhow::Result;
-use raydium_amm::instruction::{self, AmmInstruction, InitializeInstruction2};
+use std::fs;
+use anyhow::{Result, Context};
+use raydium_amm::instruction::{self, AmmInstruction};
+use spl_token_2022::{
+    extension::StateWithExtensions,
+    state::Mint,
+};
+use spl_token::solana_program::program_option::COption;
+use spl_tlv_account_resolution::{
+    account::ExtraAccountMeta,
+    seeds::Seed,
+};
+
+
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -26,7 +37,7 @@ enum Commands {
     /// Initialize a Raydium AMM pool with Token-2022 support
     InitPool {
         /// AMM program ID
-        #[arg(long, default_value = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")]
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")] // devnet
         amm_program_id: String,
         /// Coin mint address (Token-2022 supported)
         #[arg(long)]
@@ -46,57 +57,114 @@ enum Commands {
         /// Open time (Unix timestamp)
         #[arg(long)]
         open_time: u64,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
     },
-    /// Deposit liquidity to an existing AMM pool
-    Deposit {
-        /// AMM pool address
-        #[arg(long)]
-        pool_address: String,
-        /// Coin amount to deposit
-        #[arg(long)]
-        coin_amount: u64,
-        /// PC amount to deposit
-        #[arg(long)]
-        pc_amount: u64,
-        /// Minimum LP tokens to receive
-        #[arg(long)]
-        min_lp_amount: u64,
+    /// Initialize whitelist for transfer hook
+    InitWhitelist {
+        /// AMM program ID
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")] // devnet
+        amm_program_id: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
     },
-    /// Withdraw liquidity from an AMM pool
-    Withdraw {
-        /// AMM pool address
+    /// Add hook to whitelist
+    AddHookToWhitelist {
+        /// AMM program ID
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
+        amm_program_id: String,
+        /// Hook program ID to add
         #[arg(long)]
-        pool_address: String,
-        /// LP token amount to burn
-        #[arg(long)]
-        lp_amount: u64,
-        /// Minimum coin amount to receive
-        #[arg(long)]
-        min_coin_amount: Option<u64>,
-        /// Minimum PC amount to receive
-        #[arg(long)]
-        min_pc_amount: Option<u64>,
+        hook_program_id: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
     },
-    /// Swap tokens on an AMM pool
-    Swap {
-        /// AMM pool address
+    /// Remove hook from whitelist
+    RemoveHookFromWhitelist {
+        /// AMM program ID
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
+        amm_program_id: String,
+        /// Hook program ID to remove
         #[arg(long)]
-        pool_address: String,
-        /// Amount to swap (in base units)
-        #[arg(long)]
-        amount_in: u64,
-        /// Minimum amount out (in base units)
-        #[arg(long)]
-        min_amount_out: u64,
-        /// Swap base in (true) or base out (false)
-        #[arg(long, default_value = "true")]
-        base_in: bool,
+        hook_program_id: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
     },
-    /// Get pool information
-    PoolInfo {
-        /// AMM pool address
+    /// Get whitelist info
+    GetWhitelistInfo {
+        /// AMM program ID
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
+        amm_program_id: String,
+    },
+    /// Create a Token-2022 mint with transfer hook
+    CreateHookMint {
+        /// Transfer hook program ID
         #[arg(long)]
-        pool_address: String,
+        hook_program_id: String,
+        /// Mint decimals
+        #[arg(long, default_value = "9")]
+        decimals: u8,
+        /// Initial supply to mint to payer
+        #[arg(long, default_value = "1000000000")]
+        initial_supply: u64,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
+    },
+    /// Initialize the transfer hook's extra account meta list
+    InitHookMetaList {
+        /// Transfer hook program ID
+        #[arg(long)]
+        hook_program_id: String,
+        /// Mint address with transfer hook
+        #[arg(long)]
+        mint: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
+    },
+    /// Initialize whitelist for a transfer hook
+    InitHookWhitelist {
+        /// Transfer hook program ID
+        #[arg(long)]
+        hook_program_id: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
+    },
+    /// Add user to transfer hook whitelist
+    AddToHookWhitelist {
+        /// Transfer hook program ID
+        #[arg(long)]
+        hook_program_id: String,
+        /// User pubkey to add
+        #[arg(long)]
+        user: String,
+        /// Path to payer keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        payer: String,
+    },
+    /// Test transfer with hook (should succeed if whitelisted)
+    TestHookTransfer {
+        /// Mint address with transfer hook
+        #[arg(long)]
+        mint: String,
+        /// Source token account
+        #[arg(long)]
+        source: String,
+        /// Destination token account  
+        #[arg(long)]
+        destination: String,
+        /// Transfer amount
+        #[arg(long)]
+        amount: u64,
+        /// Path to owner keypair file
+        #[arg(long, default_value = "~/.config/solana/id.json")]
+        owner: String,
     },
 }
 
@@ -118,8 +186,10 @@ async fn main() -> Result<()> {
             init_coin_amount, 
             init_pc_amount,
             nonce,
-            open_time
+            open_time,
+            payer
         } => {
+            let payer_keypair = load_keypair(payer)?;
             init_amm_pool(
                 &rpc_client, 
                 amm_program_id.clone(),
@@ -128,62 +198,136 @@ async fn main() -> Result<()> {
                 *init_coin_amount, 
                 *init_pc_amount,
                 *nonce,
-                *open_time
+                *open_time,
+                &payer_keypair
             ).await?;
         }
-        Commands::Deposit { 
-            pool_address, 
-            coin_amount, 
-            pc_amount, 
-            min_lp_amount 
-        } => {
-            deposit_liquidity(
-                &rpc_client, 
-                pool_address.clone(), 
-                *coin_amount, 
-                *pc_amount, 
-                *min_lp_amount
+        Commands::InitWhitelist { amm_program_id, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            init_whitelist(
+                &rpc_client,
+                amm_program_id.clone(),
+                &payer_keypair,
             ).await?;
         }
-        Commands::Withdraw { 
-            pool_address, 
-            lp_amount, 
-            min_coin_amount, 
-            min_pc_amount 
-        } => {
-            withdraw_liquidity(
-                &rpc_client, 
-                pool_address.clone(), 
-                *lp_amount, 
-                *min_coin_amount, 
-                *min_pc_amount
+        Commands::AddHookToWhitelist { amm_program_id, hook_program_id, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            add_hook_to_whitelist(
+                &rpc_client,
+                amm_program_id.clone(),
+                hook_program_id.clone(),
+                &payer_keypair,
             ).await?;
         }
-        Commands::Swap { 
-            pool_address, 
-            amount_in, 
-            min_amount_out, 
-            base_in 
-        } => {
-            swap_tokens(
-                &rpc_client, 
-                pool_address.clone(), 
-                *amount_in, 
-                *min_amount_out, 
-                *base_in
+        Commands::RemoveHookFromWhitelist { amm_program_id, hook_program_id, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            remove_hook_from_whitelist(
+                &rpc_client,
+                amm_program_id.clone(),
+                hook_program_id.clone(),
+                &payer_keypair,
             ).await?;
         }
-        Commands::PoolInfo { 
-            pool_address 
-        } => {
-            get_pool_info(
-                &rpc_client, 
-                pool_address.clone()
+        Commands::GetWhitelistInfo { amm_program_id } => {
+            get_whitelist_info(
+                &rpc_client,
+                amm_program_id.clone(),
+            ).await?;
+        }
+        Commands::CreateHookMint { hook_program_id, decimals, initial_supply, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            create_hook_mint(
+                &rpc_client,
+                hook_program_id.clone(),
+                *decimals,
+                *initial_supply,
+                &payer_keypair,
+            ).await?;
+        }
+        Commands::InitHookMetaList { hook_program_id, mint, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            init_hook_meta_list(
+                &rpc_client,
+                hook_program_id.clone(),
+                mint.clone(),
+                &payer_keypair,
+            ).await?;
+        }
+        Commands::InitHookWhitelist { hook_program_id, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            init_hook_whitelist(
+                &rpc_client,
+                hook_program_id.clone(),
+                &payer_keypair,
+            ).await?;
+        }
+        Commands::AddToHookWhitelist { hook_program_id, user, payer } => {
+            let payer_keypair = load_keypair(payer)?;
+            add_to_hook_whitelist(
+                &rpc_client,
+                hook_program_id.clone(),
+                user.clone(),
+                &payer_keypair,
+            ).await?;
+        }
+        Commands::TestHookTransfer { mint, source, destination, amount, owner } => {
+            let owner_keypair = load_keypair(owner)?;
+            test_hook_transfer(
+                &rpc_client,
+                mint.clone(),
+                source.clone(),
+                destination.clone(),
+                *amount,
+                &owner_keypair,
             ).await?;
         }
     }
 
     Ok(())
+}
+
+// Helper function to load keypair from file with improved error handling and format support
+fn load_keypair(path: &str) -> Result<Keypair> {
+    let expanded_path = shellexpand::tilde(path);
+    let keypair_data = fs::read_to_string(expanded_path.as_ref())
+        .with_context(|| format!("Failed to read keypair file: {}", path))?;
+    
+    // Try different keypair formats
+    let keypair = if keypair_data.trim().starts_with('[') {
+        // JSON array format (most common)
+        let keypair_bytes: Vec<u8> = serde_json::from_str(&keypair_data)
+            .with_context(|| "Failed to parse keypair JSON array")?;
+        
+        Keypair::try_from(keypair_bytes.as_slice())
+            .with_context(|| "Invalid keypair bytes")?
+    } else if keypair_data.trim().starts_with('"') {
+        // Base58 encoded string format
+        let decoded = bs58::decode(keypair_data.trim_matches('"'))
+            .into_vec()
+            .with_context(|| "Failed to decode base58 keypair")?;
+        
+        Keypair::try_from(decoded.as_slice())
+            .with_context(|| "Invalid keypair bytes from base58")?
+    } else {
+        // Try to parse as JSON object with "privateKey" field
+        #[derive(serde::Deserialize)]
+        struct KeypairFile {
+            private_key: Vec<u8>,
+        }
+        
+        let keypair_file: KeypairFile = serde_json::from_str(&keypair_data)
+            .with_context(|| "Failed to parse keypair JSON object")?;
+        
+        Keypair::try_from(keypair_file.private_key.as_slice())
+            .with_context(|| "Invalid keypair bytes from JSON object")?
+    };
+    
+    // Validate the keypair
+    if keypair.pubkey() == Pubkey::default() {
+        return Err(anyhow::anyhow!("Invalid keypair: public key is zero"));
+    }
+    
+    Ok(keypair)
 }
 
 async fn init_amm_pool(
@@ -195,6 +339,7 @@ async fn init_amm_pool(
     init_pc_amount: u64,
     nonce: u8,
     open_time: u64,
+    payer: &Keypair,
 ) -> Result<()> {
     println!("Initializing Raydium AMM pool...");
     println!("  AMM Program ID: {}", amm_program_id);
@@ -204,6 +349,7 @@ async fn init_amm_pool(
     println!("  Initial PC Amount: {}", init_pc_amount);
     println!("  Nonce: {}", nonce);
     println!("  Open Time: {}", open_time);
+    println!("  Payer: {}", payer.pubkey());
     
     // Generate keypairs for the pool
     let amm_pool_keypair = Keypair::new();
@@ -215,30 +361,32 @@ async fn init_amm_pool(
     let amm_lp_mint_keypair = Keypair::new();
     let pool_withdraw_queue_keypair = Keypair::new();
     let lp_withdraw_queue_keypair = Keypair::new();
-    let user_wallet_keypair = Keypair::new();
     
     // Parse pubkeys
     let amm_program_pubkey = Pubkey::from_str(&amm_program_id)?;
     let coin_mint_pubkey = Pubkey::from_str(&coin_mint)?;
     let pc_mint_pubkey = Pubkey::from_str(&pc_mint)?;
     
-    // Airdrop SOL to user wallet
-    println!("Airdropping SOL to user wallet...");
-    let signature = rpc_client.request_airdrop(&user_wallet_keypair.pubkey(), 2_000_000_000)?;
-    rpc_client.confirm_transaction(&signature)?;
-    println!("Airdrop confirmed: {}", signature);
+    // Check if payer has enough SOL
+    let payer_balance = rpc_client.get_balance(&payer.pubkey())?;
+    if payer_balance < 2_000_000_000 {
+        println!("Airdropping SOL to payer...");
+        let signature = rpc_client.request_airdrop(&payer.pubkey(), 2_000_000_000)?;
+        rpc_client.confirm_transaction(&signature)?;
+        println!("Airdrop confirmed: {}", signature);
+    }
     
-    // Create associated token accounts for user
-    let user_coin_ata = spl_associated_token_account::get_associated_token_address(
-        &user_wallet_keypair.pubkey(),
+    // Create associated token accounts for payer
+    let payer_coin_ata = spl_associated_token_account::get_associated_token_address(
+        &payer.pubkey(),
         &coin_mint_pubkey,
     );
-    let user_pc_ata = spl_associated_token_account::get_associated_token_address(
-        &user_wallet_keypair.pubkey(),
+    let payer_pc_ata = spl_associated_token_account::get_associated_token_address(
+        &payer.pubkey(),
         &pc_mint_pubkey,
     );
-    let user_lp_ata = spl_associated_token_account::get_associated_token_address(
-        &user_wallet_keypair.pubkey(),
+    let payer_lp_ata = spl_associated_token_account::get_associated_token_address(
+        &payer.pubkey(),
         &amm_lp_mint_keypair.pubkey(),
     );
     
@@ -254,24 +402,24 @@ async fn init_amm_pool(
     
     let mut instructions = vec![];
     
-    // Create ATAs for user
+    // Create ATAs for payer
     instructions.push(ata_instruction::create_associated_token_account(
-        &user_wallet_keypair.pubkey(),
-        &user_wallet_keypair.pubkey(),
+        &payer.pubkey(),
+        &payer.pubkey(),
         &coin_mint_pubkey,
         &spl_token::id(),
     ));
     
     instructions.push(ata_instruction::create_associated_token_account(
-        &user_wallet_keypair.pubkey(),
-        &user_wallet_keypair.pubkey(),
+        &payer.pubkey(),
+        &payer.pubkey(),
         &pc_mint_pubkey,
         &spl_token::id(),
     ));
     
     instructions.push(ata_instruction::create_associated_token_account(
-        &user_wallet_keypair.pubkey(),
-        &user_wallet_keypair.pubkey(),
+        &payer.pubkey(),
+        &payer.pubkey(),
         &amm_lp_mint_keypair.pubkey(),
         &spl_token::id(),
     ));
@@ -281,19 +429,14 @@ async fn init_amm_pool(
     let amm_lamports = rpc_client.get_minimum_balance_for_rent_exemption(amm_account_size)?;
     
     instructions.push(system_instruction::create_account(
-        &user_wallet_keypair.pubkey(),
+        &payer.pubkey(),
         &amm_pool_keypair.pubkey(),
         amm_lamports,
         amm_account_size as u64,
         &amm_program_pubkey,
     ));
     
-    // Create other AMM accounts...
-    let authority_size = 0; // PDA doesn't need space
-    let open_orders_size = 0; // Placeholder
-    let target_orders_size = 0; // Placeholder
-    
-    // Create initialize instruction
+    // Create initialize instruction using actual instruction builder
     let init_instruction = instruction::initialize2(
         &amm_program_pubkey,
         &amm_pool_keypair.pubkey(),
@@ -309,10 +452,10 @@ async fn init_amm_pool(
         &Pubkey::default(), // create_fee_destination
         &Pubkey::default(), // market_program
         &Pubkey::default(), // market
-        &user_wallet_keypair.pubkey(),
-        &user_coin_ata,
-        &user_pc_ata,
-        &user_lp_ata,
+        &payer.pubkey(),
+        &payer_coin_ata,
+        &payer_pc_ata,
+        &payer_lp_ata,
         nonce,
         open_time,
         init_pc_amount,
@@ -325,11 +468,11 @@ async fn init_amm_pool(
     let recent_blockhash = rpc_client.get_latest_blockhash()?;
     let mut transaction = Transaction::new_with_payer(
         &instructions,
-        Some(&user_wallet_keypair.pubkey()),
+        Some(&payer.pubkey()),
     );
     
     transaction.sign(
-        &[&user_wallet_keypair, &amm_pool_keypair, &amm_authority_keypair, 
+        &[payer, &amm_pool_keypair, &amm_authority_keypair, 
           &amm_open_orders_keypair, &amm_target_orders_keypair, &amm_coin_vault_keypair,
           &amm_pc_vault_keypair, &amm_lp_mint_keypair, &pool_withdraw_queue_keypair,
           &lp_withdraw_queue_keypair],
@@ -346,92 +489,596 @@ async fn init_amm_pool(
     Ok(())
 }
 
-async fn deposit_liquidity(
+async fn init_whitelist(
     rpc_client: &RpcClient,
-    pool_address: String,
-    coin_amount: u64,
-    pc_amount: u64,
-    min_lp_amount: u64,
+    amm_program_id: String,
+    payer: &Keypair,
 ) -> Result<()> {
-    println!("Depositing liquidity to pool: {}", pool_address);
-    println!("  Coin Amount: {}", coin_amount);
-    println!("  PC Amount: {}", pc_amount);
-    println!("  Min LP Amount: {}", min_lp_amount);
+    println!("Initializing whitelist...");
+    println!("  AMM Program ID: {}", amm_program_id);
+    println!("  Payer: {}", payer.pubkey());
+
+    let amm_program_pubkey = Pubkey::from_str(&amm_program_id)?;
     
-    // This would create a deposit instruction
-    // For now, just show the parameters
-    println!("Note: Deposit functionality requires pool state analysis");
-    println!("Pool address: {}", pool_address);
-    
+    // Create whitelist PDA
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"hook_whitelist"],
+        &amm_program_pubkey,
+    );
+    println!("  Whitelist PDA: {}", whitelist_pda);
+
+    // Calculate account size for fixed-size HookWhitelist
+    let whitelist_size = 32 + 4 + (32 * 32); // authority + hook_count + hooks array (32 hooks)
+    let whitelist_lamports = rpc_client.get_minimum_balance_for_rent_exemption(whitelist_size)?;
+
+    // Create whitelist account
+    let create_account_instruction = system_instruction::create_account(
+        &payer.pubkey(),
+        &whitelist_pda,
+        whitelist_lamports,
+        whitelist_size as u64,
+        &amm_program_pubkey,
+    );
+
+    // Create initialize whitelist instruction using actual instruction builder
+    let init_instruction = create_initialize_whitelist_instruction(
+        &amm_program_pubkey,
+        &payer.pubkey(),
+        &whitelist_pda,
+    )?;
+
+    let transaction = Transaction::new_signed_with_payer(
+        &[create_account_instruction, init_instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("Whitelist initialized successfully!");
+    println!("  Transaction Signature: {}", signature);
+    println!("  Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+
     Ok(())
 }
 
-async fn withdraw_liquidity(
+async fn add_hook_to_whitelist(
     rpc_client: &RpcClient,
-    pool_address: String,
-    lp_amount: u64,
-    min_coin_amount: Option<u64>,
-    min_pc_amount: Option<u64>,
+    amm_program_id: String,
+    hook_program_id: String,
+    payer: &Keypair,
 ) -> Result<()> {
-    println!("Withdrawing liquidity from pool: {}", pool_address);
-    println!("  LP Amount: {}", lp_amount);
-    if let Some(min_coin) = min_coin_amount {
-        println!("  Min Coin Amount: {}", min_coin);
-    }
-    if let Some(min_pc) = min_pc_amount {
-        println!("  Min PC Amount: {}", min_pc);
-    }
-    
-    // This would create a withdraw instruction
-    println!("Note: Withdraw functionality requires pool state analysis");
-    
+    println!("Adding hook to whitelist: {}", hook_program_id);
+    println!("  AMM Program ID: {}", amm_program_id);
+    println!("  Payer: {}", payer.pubkey());
+
+    let amm_program_pubkey = Pubkey::from_str(&amm_program_id)?;
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"hook_whitelist"],
+        &amm_program_pubkey,
+    );
+
+    let instruction = create_update_whitelist_instruction(
+        &amm_program_pubkey,
+        &payer.pubkey(),
+        &whitelist_pda,
+        &hook_program_pubkey,
+        true, // Add hook
+    )?;
+
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("Hook added to whitelist successfully!");
+    println!("  Transaction Signature: {}", signature);
+    println!("  Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+
     Ok(())
 }
 
-async fn swap_tokens(
+async fn remove_hook_from_whitelist(
     rpc_client: &RpcClient,
-    pool_address: String,
-    amount_in: u64,
-    min_amount_out: u64,
-    base_in: bool,
+    amm_program_id: String,
+    hook_program_id: String,
+    payer: &Keypair,
 ) -> Result<()> {
-    println!("Swapping tokens on pool: {}", pool_address);
-    println!("  Amount In: {}", amount_in);
-    println!("  Min Amount Out: {}", min_amount_out);
-    println!("  Base In: {}", base_in);
-    
-    // This would create a swap instruction
-    println!("Note: Swap functionality requires pool state analysis");
-    
+    println!("Removing hook from whitelist: {}", hook_program_id);
+    println!("  AMM Program ID: {}", amm_program_id);
+    println!("  Payer: {}", payer.pubkey());
+
+    let amm_program_pubkey = Pubkey::from_str(&amm_program_id)?;
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"hook_whitelist"],
+        &amm_program_pubkey,
+    );
+
+    let instruction = create_update_whitelist_instruction(
+        &amm_program_pubkey,
+        &payer.pubkey(),
+        &whitelist_pda,
+        &hook_program_pubkey,
+        false, // Remove hook
+    )?;
+
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("Hook removed from whitelist successfully!");
+    println!("  Transaction Signature: {}", signature);
+    println!("  Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+
     Ok(())
 }
 
-async fn get_pool_info(
+async fn get_whitelist_info(
     rpc_client: &RpcClient,
-    pool_address: String,
+    amm_program_id: String,
 ) -> Result<()> {
-    println!("Getting pool information for: {}", pool_address);
-    
-    let pool_pubkey = Pubkey::from_str(&pool_address)?;
-    
-    // Get account info
-    match rpc_client.get_account(&pool_pubkey) {
+    println!("Getting whitelist info...");
+    println!("  AMM Program ID: {}", amm_program_id);
+
+    let amm_program_pubkey = Pubkey::from_str(&amm_program_id)?;
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"hook_whitelist"],
+        &amm_program_pubkey,
+    );
+    println!("  Whitelist PDA: {}", whitelist_pda);
+
+    match rpc_client.get_account(&whitelist_pda) {
         Ok(account) => {
-            println!("Pool account found!");
-            println!("  Owner: {}", account.owner);
-            println!("  Lamports: {}", account.lamports);
-            println!("  Data length: {} bytes", account.data.len());
-            
-            // Try to deserialize as AmmInfo
-            if account.owner == Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")? {
-                println!("  This appears to be a Raydium AMM pool");
-                // You could deserialize the data here to show pool details
+            println!("Whitelist account exists");
+            println!("  Account size: {} bytes", account.data.len());
+            if !account.data.is_empty() {
+                println!("  Whitelist is initialized");
+                // You could deserialize the data here to show whitelist contents
+            } else {
+                println!("  Whitelist is empty");
             }
         }
+        Err(_) => {
+            println!("Whitelist account does not exist");
+        }
+    }
+
+    Ok(())
+}
+
+// Transfer hook testing functions
+
+async fn create_hook_mint(
+    rpc_client: &RpcClient,
+    hook_program_id: String,
+    decimals: u8,
+    initial_supply: u64,
+    payer: &Keypair,
+) -> Result<()> {
+    println!("Creating Token-2022 mint with transfer hook...");
+    
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    let mint_keypair = Keypair::new();
+    
+    // Create mint account with transfer hook extension
+    let mint_size = 82; // Standard mint size with transfer hook extension
+    
+    let mint_lamports = rpc_client.get_minimum_balance_for_rent_exemption(mint_size)?;
+    
+    let mut instructions = vec![];
+    
+    // Create mint account
+    instructions.push(system_instruction::create_account(
+        &payer.pubkey(),
+        &mint_keypair.pubkey(),
+        mint_lamports,
+        mint_size as u64,
+        &spl_token_2022::id(),
+    ));
+    
+    // Initialize transfer hook extension
+    instructions.push(
+        spl_token_2022::extension::transfer_hook::instruction::initialize(
+            &spl_token_2022::id(),
+            &mint_keypair.pubkey(),
+            Some(payer.pubkey()),
+            Some(hook_program_pubkey),
+        )?
+    );
+    
+    // Initialize mint
+    instructions.push(
+        spl_token_2022::instruction::initialize_mint2(
+            &spl_token_2022::id(),
+            &mint_keypair.pubkey(),
+            &payer.pubkey(),
+            Some(&payer.pubkey()),
+            decimals,
+        )?
+    );
+    
+    // Create ATA for payer and mint initial supply
+    let payer_ata = spl_associated_token_account::get_associated_token_address_with_program_id(
+        &payer.pubkey(),
+        &mint_keypair.pubkey(),
+        &spl_token_2022::id(),
+    );
+    
+    instructions.push(
+        spl_associated_token_account::instruction::create_associated_token_account(
+            &payer.pubkey(),
+            &payer.pubkey(),
+            &mint_keypair.pubkey(),
+            &spl_token_2022::id(),
+        )
+    );
+    
+    instructions.push(
+        spl_token_2022::instruction::mint_to(
+            &spl_token_2022::id(),
+            &mint_keypair.pubkey(),
+            &payer_ata,
+            &payer.pubkey(),
+            &[],
+            initial_supply,
+        )?
+    );
+    
+    // Send transaction
+    let recent_blockhash = rpc_client.get_latest_blockhash()?;
+    let mut transaction = Transaction::new_with_payer(&instructions, Some(&payer.pubkey()));
+    transaction.sign(&[payer, &mint_keypair], recent_blockhash);
+    
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    
+    println!("Token-2022 mint with transfer hook created successfully!");
+    println!("  Mint Address: {}", mint_keypair.pubkey());
+    println!("  Hook Program: {}", hook_program_pubkey);
+    println!("  Payer ATA: {}", payer_ata);
+    println!("  Transaction: {}", signature);
+    println!("  Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+    
+    Ok(())
+}
+
+async fn init_hook_meta_list(
+    rpc_client: &RpcClient,
+    hook_program_id: String,
+    mint: String,
+    payer: &Keypair,
+) -> Result<()> {
+    println!("Initializing transfer hook meta list...");
+    println!("  Hook Program ID: {}", hook_program_id);
+    println!("  Mint: {}", mint);
+    
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    let mint_pubkey = Pubkey::from_str(&mint)?;
+    
+    // Create ExtraAccountMetaList PDA for the hook program
+    let (meta_list_pda, _bump) = Pubkey::find_program_address(
+        &[b"extra-account-metas", mint_pubkey.as_ref()],
+        &hook_program_pubkey,
+    );
+    
+    // Create whitelist PDA for the hook program
+    let (whitelist_pda, _whitelist_bump) = Pubkey::find_program_address(
+        &[b"whitelist"],
+        &hook_program_pubkey,
+    );
+    
+    // Define the extra account metas that the hook program needs
+    let extra_account_metas = vec![
+        spl_tlv_account_resolution::account::ExtraAccountMeta::new_with_seeds(
+            &[
+                spl_tlv_account_resolution::seeds::Seed::Literal {
+                    bytes: b"whitelist".to_vec(),
+                },
+            ],
+            false, // is_signer
+            false, // is_writable
+        )?
+    ];
+    
+    // Use the Raydium AMM program to initialize the extra account meta list
+    let amm_program_id = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8"; // devnet
+    let amm_program_pubkey = Pubkey::from_str(amm_program_id)?;
+    
+    // Create instruction using the actual Raydium AMM instruction
+    let instruction = create_initialize_extra_account_meta_list_instruction(
+        &amm_program_pubkey,
+        &meta_list_pda,
+        &mint_pubkey,
+        &payer.pubkey(),
+        extra_account_metas,
+    )?;
+    
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+    
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("Transfer hook meta list initialized successfully!");
+    println!("  Meta List PDA: {}", meta_list_pda);
+    println!("  Whitelist PDA: {}", whitelist_pda);
+    println!("  Transaction: {}", signature);
+    
+    Ok(())
+}
+
+async fn init_hook_whitelist(
+    rpc_client: &RpcClient,
+    hook_program_id: String,
+    payer: &Keypair,
+) -> Result<()> {
+    println!("Initializing transfer hook whitelist...");
+    println!("  Hook Program ID: {}", hook_program_id);
+    
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    
+    // Create whitelist PDA
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"whitelist"],
+        &hook_program_pubkey,
+    );
+    
+    let instruction = create_initialize_hook_whitelist_instruction(
+        &hook_program_pubkey,
+        &payer.pubkey(),
+        &whitelist_pda,
+    )?;
+    
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+    
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("Transfer hook whitelist initialized successfully!");
+    println!("  Transaction: {}", signature);
+    
+    Ok(())
+}
+
+async fn add_to_hook_whitelist(
+    rpc_client: &RpcClient,
+    hook_program_id: String,
+    user: String,
+    payer: &Keypair,
+) -> Result<()> {
+    println!("Adding user to transfer hook whitelist: {}", user);
+    
+    let hook_program_pubkey = Pubkey::from_str(&hook_program_id)?;
+    let user_pubkey = Pubkey::from_str(&user)?;
+    
+    let (whitelist_pda, _bump) = Pubkey::find_program_address(
+        &[b"whitelist"],
+        &hook_program_pubkey,
+    );
+    
+    let instruction = create_update_hook_whitelist_instruction(
+        &hook_program_pubkey,
+        &payer.pubkey(),
+        &whitelist_pda,
+        &user_pubkey,
+        true, // Add user
+    )?;
+    
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&payer.pubkey()),
+        &[payer],
+        rpc_client.get_latest_blockhash()?,
+    );
+    
+    let signature = rpc_client.send_and_confirm_transaction(&transaction)?;
+    println!("User added to transfer hook whitelist successfully!");
+    println!("  Transaction: {}", signature);
+    
+    Ok(())
+}
+
+async fn test_hook_transfer(
+    rpc_client: &RpcClient,
+    mint: String,
+    source: String,
+    destination: String,
+    amount: u64,
+    owner: &Keypair,
+) -> Result<()> {
+    println!("Testing transfer with hook validation...");
+    println!("  Mint: {}", mint);
+    println!("  Source: {}", source);
+    println!("  Destination: {}", destination);
+    println!("  Amount: {}", amount);
+    
+    let mint_pubkey = Pubkey::from_str(&mint)?;
+    let source_pubkey = Pubkey::from_str(&source)?;
+    let destination_pubkey = Pubkey::from_str(&destination)?;
+    
+    // Get mint info to find transfer hook program
+    let mint_account = rpc_client.get_account(&mint_pubkey)?;
+    let mint_info = StateWithExtensions::<Mint>::unpack(&mint_account.data).map(|state| state.base).unwrap_or_else(|_| {
+        // Fallback to default mint info if unpack fails
+        Mint {
+            mint_authority: COption::Some(owner.pubkey()),
+            supply: 0,
+            decimals: 9,
+            is_initialized: true,
+            freeze_authority: COption::None,
+        }
+    });
+    
+    // 
+    let transfer_instruction = spl_token_2022::instruction::transfer_checked(
+        &spl_token_2022::id(),
+        &source_pubkey,
+        &mint_pubkey,
+        &destination_pubkey,
+        &owner.pubkey(),
+        &[],
+        amount,
+        mint_info.decimals,
+    )?;
+    
+    let recent_blockhash = rpc_client.get_latest_blockhash()?;
+    let mut transaction = Transaction::new_with_payer(
+        &[transfer_instruction],
+        Some(&owner.pubkey()),
+    );
+    transaction.sign(&[owner], recent_blockhash);
+    
+    match rpc_client.send_and_confirm_transaction(&transaction) {
+        Ok(signature) => {
+            println!("✅ Transfer succeeded - user is whitelisted!");
+            println!("  Transaction: {}", signature);
+            println!("  Explorer: https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+        }
         Err(e) => {
-            println!("Error getting pool info: {}", e);
+            println!("❌ Transfer failed - user may not be whitelisted or other error:");
+            println!("  Error: {}", e);
         }
     }
     
     Ok(())
+}
+
+// Helper functions for transfer hook instructions
+
+fn create_initialize_extra_account_meta_list_instruction(
+    program_id: &Pubkey,
+    meta_list_pda: &Pubkey,
+    mint: &Pubkey,
+    authority: &Pubkey,
+    extra_account_metas: Vec<ExtraAccountMeta>,
+) -> Result<Instruction> {
+    // Create the actual Raydium AMM InitializeExtraAccountMetaList instruction
+    let instruction_data = AmmInstruction::InitializeExtraAccountMetaList(extra_account_metas);
+    
+    let accounts = vec![
+        solana_sdk::instruction::AccountMeta::new(*meta_list_pda, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*mint, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*authority, true),
+        solana_sdk::instruction::AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    Ok(Instruction {
+        program_id: *program_id,
+        accounts,
+        data: instruction_data.pack()?,
+    })
+}
+
+fn create_initialize_hook_whitelist_instruction(
+    program_id: &Pubkey,
+    authority: &Pubkey,
+    whitelist_pda: &Pubkey,
+) -> Result<Instruction> {
+    let mut data = vec![0]; // Initialize whitelist instruction
+    data.extend_from_slice(&authority.to_bytes());
+    
+    let accounts = vec![
+        solana_sdk::instruction::AccountMeta::new(*whitelist_pda, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*authority, true),
+        solana_sdk::instruction::AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    Ok(Instruction {
+        program_id: *program_id,
+        accounts,
+        data,
+    })
+}
+
+fn create_update_hook_whitelist_instruction(
+    program_id: &Pubkey,
+    authority: &Pubkey,
+    whitelist_pda: &Pubkey,
+    user: &Pubkey,
+    add: bool,
+) -> Result<Instruction> {
+    let mut data = vec![if add { 1 } else { 2 }]; // Add/Remove instruction
+    data.extend_from_slice(&user.to_bytes());
+    
+    let accounts = vec![
+        solana_sdk::instruction::AccountMeta::new(*whitelist_pda, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*authority, true),
+    ];
+
+    Ok(Instruction {
+        program_id: *program_id,
+        accounts,
+        data,
+    })
+}
+
+// Helper functions using actual instruction builders
+
+fn create_initialize_whitelist_instruction(
+    program_id: &Pubkey,
+    authority: &Pubkey,
+    whitelist_pda: &Pubkey,
+) -> Result<Instruction> {
+    // Use the actual instruction enum from your crate
+    let instruction_data = AmmInstruction::InitializeHookWhitelist { 
+        authority: *authority 
+    };
+    
+    let accounts = vec![
+        solana_sdk::instruction::AccountMeta::new(*whitelist_pda, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*authority, true),
+        solana_sdk::instruction::AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    Ok(Instruction {
+        program_id: *program_id,
+        accounts,
+        data: instruction_data.pack()?,
+    })
+}
+
+fn create_update_whitelist_instruction(
+    program_id: &Pubkey,
+    authority: &Pubkey,
+    whitelist_pda: &Pubkey,
+    hook_program_id: &Pubkey,
+    add: bool,
+) -> Result<Instruction> {
+    // Use the actual instruction enum from your crate
+    let action = if add { 
+        raydium_amm::instruction::HookWhitelistAction::Add 
+    } else { 
+        raydium_amm::instruction::HookWhitelistAction::Remove 
+    };
+    
+    let instruction_data = AmmInstruction::UpdateHookWhitelist(
+        raydium_amm::instruction::UpdateHookWhitelistInstruction {
+            hook_program_id: *hook_program_id,
+            action,
+        }
+    );
+    
+    let accounts = vec![
+        solana_sdk::instruction::AccountMeta::new(*whitelist_pda, false),
+        solana_sdk::instruction::AccountMeta::new_readonly(*authority, true),
+    ];
+
+    Ok(Instruction {
+        program_id: *program_id,
+        accounts,
+        data: instruction_data.pack()?,
+    })
 }

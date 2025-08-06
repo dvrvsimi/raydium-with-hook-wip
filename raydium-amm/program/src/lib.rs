@@ -79,16 +79,10 @@ pub fn process_instruction(
         crate::instruction::AmmInstruction::CreateToken2022Mint(create_mint) => {
             crate::process::token2022::process_create_token2022_mint(program_id, accounts, create_mint)
         }
-        crate::instruction::AmmInstruction::CreateTransferHook(create_hook) => {
-            crate::process::token2022::process_create_transfer_hook(program_id, accounts, create_hook)
-        }
+
         crate::instruction::AmmInstruction::UpdateHookWhitelist(update_whitelist) => {
             crate::process::process_update_hook_whitelist(program_id, accounts, update_whitelist)
         }
-        crate::instruction::AmmInstruction::TokenTransfer(transfer) => {
-            crate::process::token2022::process_token_transfer(program_id, accounts, transfer)
-        }
-        // TransferHook instruction removed - use SPL Transfer Hook Interface instead
         crate::instruction::AmmInstruction::InitializeExtraAccountMetaList(init_meta) => {
             crate::process::token2022::process_initialize_extra_account_meta_list(program_id, accounts, init_meta)
         }
@@ -118,4 +112,4 @@ solana_security_txt::security_txt! {
 #[cfg(feature = "devnet")]
 solana_program::declare_id!("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8");
 #[cfg(not(feature = "devnet"))]
-solana_program::declare_id!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+solana_program::declare_id!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"); // TODO: change this when you deploy this version

@@ -1,5 +1,4 @@
 use crate::{
-    error::AmmError,
     instruction::{UpdateHookWhitelistInstruction, HookWhitelistAction},
     state::{find_whitelist_pda, HookWhitelist},
 };
@@ -128,11 +127,6 @@ pub fn process_update_hook_whitelist(
     // Update whitelist based on action
     match instruction.action {
         HookWhitelistAction::Add => {
-            if whitelist.hooks.len() >= 100 {
-                msg!("Whitelist is full (max 100 hooks)");
-                return Err(AmmError::WhitelistFull.into());
-            }
-            
             whitelist.add_hook(instruction.hook_program_id)?;
             msg!("Added hook program to whitelist: {}", instruction.hook_program_id);
         }
@@ -223,7 +217,7 @@ pub fn is_hook_whitelisted(
     let whitelist = HookWhitelist::unpack(&whitelist_data)?;
 
     // Check if hook is in the whitelist
-    Ok(whitelist.is_hook_whitelisted(hook_program_id))
+    Ok(whitelist.contains_hook(hook_program_id))
 }
 
 /// Get all whitelisted hooks (for querying)
@@ -246,5 +240,5 @@ pub fn get_whitelisted_hooks(
     let whitelist_data = whitelist_account.try_borrow_data()?;
     let whitelist = HookWhitelist::unpack(&whitelist_data)?;
 
-    Ok(whitelist.hooks.clone())
+    Ok(whitelist.get_active_hooks().to_vec())
 }

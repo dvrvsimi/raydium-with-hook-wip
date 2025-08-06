@@ -3,8 +3,7 @@
 use solana_system_interface::instruction as system_instruction;
 use crate::{
     error::AmmError,
-    instruction::{CreateToken2022MintInstruction, CreateTransferHookInstruction, UpdateHookWhitelistInstruction, TokenTransferInstruction},
-    state::{find_whitelist_pda, HookWhitelist},
+    instruction::{CreateToken2022MintInstruction, UpdateHookWhitelistInstruction},
 };
 
 
@@ -22,7 +21,6 @@ use spl_token_2022::{
     extension::{ExtensionType, BaseStateWithExtensions, StateWithExtensions},
     state::Mint,
 };
-use solana_program::program_pack::Pack;
 use spl_tlv_account_resolution::state::ExtraAccountMetaList;
 
 
@@ -183,148 +181,17 @@ pub fn process_create_token2022_mint(
     Ok(())
 }
 
-pub fn process_create_transfer_hook(
-    _program_id: &Pubkey,
-    _accounts: &[AccountInfo],
-    _instruction: CreateTransferHookInstruction,
-) -> ProgramResult {
-    // This would create a transfer hook program
-    // For now, just return success
-    msg!("Transfer hook creation not implemented yet");
-    Ok(())
-}
+
 
 pub fn process_update_hook_whitelist(
-    _program_id: &Pubkey,
-    _accounts: &[AccountInfo],
-    _instruction: UpdateHookWhitelistInstruction,
-) -> ProgramResult {
-    // This would update the hook whitelist
-    // For now, just return success
-    msg!("Hook whitelist update not implemented yet");
-    Ok(())
-}
-
-pub fn process_token_transfer(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    instruction: TokenTransferInstruction,
+    instruction: UpdateHookWhitelistInstruction,
 ) -> ProgramResult {
-    let account_info_iter = &mut accounts.iter();
-    
-    // Get accounts
-    let source_account = next_account_info(account_info_iter)?;
-    let destination_account = next_account_info(account_info_iter)?;
-    let mint_account = next_account_info(account_info_iter)?;
-    let authority_account = next_account_info(account_info_iter)?;
-    let token_program = next_account_info(account_info_iter)?;
-    
-    // Optionally get extra accounts for transfer hooks
-    let remaining_accounts: Vec<AccountInfo> = account_info_iter.cloned().collect();
-    
-    // Verify authority is signer
-    if !authority_account.is_signer {
-        return Err(AmmError::InvalidSignAccount.into());
-    }
-    
-    // Check if this is Token-2022 or SPL Token
-    let is_token_2022 = *token_program.key == spl_token_2022::id();
-    let is_spl_token = *token_program.key == spl_token::id();
-    
-    if !is_token_2022 && !is_spl_token {
-        return Err(AmmError::InvalidSplTokenProgram.into());
-    }
-    
-    if is_token_2022 {
-        // Read mint data to get decimals and check for transfer hook
-        let mint_data = mint_account.try_borrow_data()?;
-        let mint_state = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
-        let decimals = mint_state.base.decimals;
-        
-        // Check if mint has transfer hook extension
-        let has_transfer_hook = mint_state.get_extension::<spl_token_2022::extension::transfer_hook::TransferHook>().is_ok();
-        
-        if has_transfer_hook {
-            // Use transfer_checked with hook execution
-            let transfer_ix = spl_token_2022::instruction::transfer_checked(
-                token_program.key,
-                source_account.key,
-                mint_account.key,
-                destination_account.key,
-                authority_account.key,
-                &[],
-                instruction.amount,
-                decimals,
-            )?;
-            
-            // Include remaining accounts for hook execution
-            let mut invoke_accounts = vec![
-                source_account.clone(),
-                mint_account.clone(),
-                destination_account.clone(),
-                authority_account.clone(),
-                token_program.clone(),
-            ];
-            invoke_accounts.extend(remaining_accounts);
-            
-            invoke(&transfer_ix, &invoke_accounts)?;
-        } else {
-            // Regular Token-2022 transfer without hooks
-            let transfer_ix = spl_token_2022::instruction::transfer_checked(
-                token_program.key,
-                source_account.key,
-                mint_account.key,
-                destination_account.key,
-                authority_account.key,
-                &[],
-                instruction.amount,
-                decimals,
-            )?;
-            
-            invoke(
-                &transfer_ix,
-                &[
-                    source_account.clone(),
-                    mint_account.clone(),
-                    destination_account.clone(),
-                    authority_account.clone(),
-                    token_program.clone(),
-                ],
-            )?;
-        }
-    } else {
-        // SPL Token transfer (no hooks supported)
-        let transfer_ix = spl_token::instruction::transfer(
-            token_program.key,
-            source_account.key,
-            destination_account.key,
-            authority_account.key,
-            &[],
-            instruction.amount,
-        )?;
-        
-        invoke(
-            &transfer_ix,
-            &[
-                source_account.clone(),
-                destination_account.clone(),
-                authority_account.clone(),
-                token_program.clone(),
-            ],
-        )?;
-    }
-    
-    msg!("Token transfer executed successfully");
-    msg!("Amount: {}", instruction.amount);
-    msg!("From: {}", source_account.key);
-    msg!("To: {}", destination_account.key);
-    
-    Ok(())
+    // this function should just validate and delegate to the whitelist module
+    crate::process::whitelist::process_update_hook_whitelist(program_id, accounts, instruction)
 }
 
-// TransferHook processing removed - use SPL Transfer Hook Interface instead
-
-/// Initialize extra account meta list for transfer hook
 pub fn process_initialize_extra_account_meta_list(
     program_id: &Pubkey,
     accounts: &[AccountInfo],

@@ -1015,40 +1015,108 @@ impl GetSwapBaseOutData {
     }
 }
 
+// Maximum number of hooks that can be whitelisted
+// This determines your account size - 
+pub const MAX_HOOKS: usize = 32; // Allows 32 different transfer hook programs
+
+// Account size calculation:
+// 32 bytes (authority) + 4 bytes (hook_count) + (32 * 64) bytes (hooks array) = 2,084 bytes
+pub const HOOK_WHITELIST_LEN: usize = 32 + 4 + (32 * MAX_HOOKS);
+
 #[repr(C)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HookWhitelist {
+    /// The authority that can modify this whitelist
     pub authority: Pubkey,
-    pub hooks: Vec<Pubkey>, // List of approved hook program IDs
+    /// Number of active hooks in the array
+    pub hook_count: u32,
+    /// Fixed-size array of hook program IDs
+    pub hooks: [Pubkey; MAX_HOOKS],
 }
 
 impl HookWhitelist {
-    pub const LEN: usize = 32 + 4 + (32 * 100); // authority + vec len + max 100 hooks
-    pub const MAX_HOOKS: usize = 100;
-    
+    pub fn new(authority: Pubkey) -> Self {
+        Self {
+            authority,
+            hook_count: 0,
+            hooks: [Pubkey::default(); MAX_HOOKS],
+        }
+    }
+
+    /// Add a hook to the whitelist if not already present
     pub fn add_hook(&mut self, hook_program_id: Pubkey) -> Result<(), AmmError> {
-        if self.hooks.len() >= Self::MAX_HOOKS {
-            return Err(AmmError::InvalidInstruction);
+        // Check if hook already exists
+        if self.contains_hook(&hook_program_id) {
+            return Err(AmmError::InvalidWhitelistAccount); // Hook already whitelisted
         }
-        if !self.hooks.contains(&hook_program_id) {
-            self.hooks.push(hook_program_id);
+
+        // Check if we have space
+        if self.hook_count as usize >= MAX_HOOKS {
+            return Err(AmmError::WhitelistFull); // Whitelist is full
         }
+
+        // Add hook to first available slot
+        self.hooks[self.hook_count as usize] = hook_program_id;
+        self.hook_count += 1;
+
         Ok(())
     }
-    
+
+    /// Remove a hook from the whitelist
     pub fn remove_hook(&mut self, hook_program_id: &Pubkey) -> Result<(), AmmError> {
-        if let Some(pos) = self.hooks.iter().position(|x| x == hook_program_id) {
-            self.hooks.remove(pos);
-            Ok(())
-        } else {
-            Err(AmmError::InvalidInstruction)
+        // Find the hook index
+        let mut found_index = None;
+        for (i, hook) in self.hooks.iter().enumerate() {
+            if i >= self.hook_count as usize {
+                break;
+            }
+            if hook == hook_program_id {
+                found_index = Some(i);
+                break;
+            }
         }
+
+        let index = found_index.ok_or(AmmError::TransferHookNotWhitelisted)?; // Hook not found
+
+        // Shift all elements after the removed one to the left
+        for i in index..(self.hook_count as usize - 1) {
+            self.hooks[i] = self.hooks[i + 1];
+        }
+
+        // Clear the last element and decrement count
+        self.hooks[self.hook_count as usize - 1] = Pubkey::default();
+        self.hook_count -= 1;
+
+        Ok(())
     }
-    
-    pub fn is_hook_whitelisted(&self, hook_program_id: &Pubkey) -> bool {
-        self.hooks.contains(hook_program_id)
+
+    /// Check if a hook is whitelisted
+    pub fn contains_hook(&self, hook_program_id: &Pubkey) -> bool {
+        for i in 0..(self.hook_count as usize) {
+            if &self.hooks[i] == hook_program_id {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get all active hooks as a slice
+    pub fn get_active_hooks(&self) -> &[Pubkey] {
+        &self.hooks[0..(self.hook_count as usize)]
+    }
+
+    /// Check if whitelist is full
+    pub fn is_full(&self) -> bool {
+        self.hook_count as usize >= MAX_HOOKS
+    }
+
+    /// Get available slots
+    pub fn available_slots(&self) -> usize {
+        MAX_HOOKS - (self.hook_count as usize)
     }
 }
+
+impl Sealed for HookWhitelist {}
 
 impl IsInitialized for HookWhitelist {
     fn is_initialized(&self) -> bool {
@@ -1056,57 +1124,43 @@ impl IsInitialized for HookWhitelist {
     }
 }
 
-impl Sealed for HookWhitelist {}
 impl Pack for HookWhitelist {
-    const LEN: usize = HookWhitelist::LEN;
+    const LEN: usize = HOOK_WHITELIST_LEN;
 
-    fn pack_into_slice(&self, output: &mut [u8]) {
-        let data = self;
-        let output = array_mut_ref![output, 0, HookWhitelist::LEN];
-        
-        // Pack authority
-        let (authority_out, rest) = mut_array_refs![output, 32, HookWhitelist::LEN - 32];
-        authority_out.copy_from_slice(&data.authority.to_bytes());
-        
-        // Pack hooks vector
-        let hooks_len = data.hooks.len().min(100); // Cap at 100 hooks
-        let hooks_len_bytes = (hooks_len as u32).to_le_bytes();
-        rest[..4].copy_from_slice(&hooks_len_bytes);
-        
-        // Pack hook program IDs
-        for (i, hook) in data.hooks.iter().take(100).enumerate() {
-            let start = 4 + (i * 32);
-            let end = start + 32;
-            if end <= rest.len() {
-                rest[start..end].copy_from_slice(&hook.to_bytes());
-            }
+    fn pack_into_slice(&self, dst: &mut [u8]) {
+        let dst = array_mut_ref![dst, 0, HOOK_WHITELIST_LEN];
+        let (authority_dst, hook_count_dst, hooks_dst) = mut_array_refs![dst, 32, 4, 32 * MAX_HOOKS];
+
+        authority_dst.copy_from_slice(self.authority.as_ref());
+        *hook_count_dst = self.hook_count.to_le_bytes();
+
+        // Pack hooks array
+        for (i, hook) in self.hooks.iter().enumerate() {
+            let hook_dst = array_mut_ref![hooks_dst, i * 32, 32];
+            hook_dst.copy_from_slice(hook.as_ref());
         }
     }
 
-    fn unpack_from_slice(input: &[u8]) -> Result<HookWhitelist, ProgramError> {
-        let input = array_ref![input, 0, HookWhitelist::LEN];
-        
-        // Unpack authority
-        let (authority_bytes, rest) = array_refs![input, 32, HookWhitelist::LEN - 32];
-        let authority = Pubkey::new_from_array(*authority_bytes);
-        
-        // Unpack hooks vector
-        let hooks_len_bytes = array_ref![rest, 0, 4];
-        let hooks_len = u32::from_le_bytes(*hooks_len_bytes) as usize;
-        let hooks_len = hooks_len.min(100); // Cap at 100 hooks
-        
-        let mut hooks = Vec::new();
-        for i in 0..hooks_len {
-            let start = 4 + (i * 32);
-            let end = start + 32;
-            if end <= rest.len() {
-                let hook_bytes = array_ref![rest, start, 32];
-                hooks.push(Pubkey::new_from_array(*hook_bytes));
-            }
+    fn unpack_from_slice(src: &[u8]) -> Result<Self, ProgramError> {
+        let src = array_ref![src, 0, HOOK_WHITELIST_LEN];
+        let (authority, hook_count, hooks_data) = array_refs![src, 32, 4, 32 * MAX_HOOKS];
+
+        let authority = Pubkey::new_from_array(*authority);
+        let hook_count = u32::from_le_bytes(*hook_count);
+
+        if hook_count > MAX_HOOKS as u32 {
+            return Err(ProgramError::InvalidAccountData);
         }
-        
+
+        let mut hooks = [Pubkey::default(); MAX_HOOKS];
+        for i in 0..MAX_HOOKS {
+            let hook_data = array_ref![hooks_data, i * 32, 32];
+            hooks[i] = Pubkey::new_from_array(*hook_data);
+        }
+
         Ok(HookWhitelist {
             authority,
+            hook_count,
             hooks,
         })
     }

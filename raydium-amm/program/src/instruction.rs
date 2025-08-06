@@ -371,9 +371,6 @@ pub enum AmmInstruction {
 
     // New Token-2022 instructions
     CreateToken2022Mint(CreateToken2022MintInstruction),
-    CreateTransferHook(CreateTransferHookInstruction),
-    TokenTransfer(TokenTransferInstruction),
-    // TransferHook instruction removed - use SPL Transfer Hook Interface instead
     InitializeExtraAccountMetaList(Vec<spl_tlv_account_resolution::account::ExtraAccountMeta>),
 
     // Whitelist instructions
@@ -398,34 +395,36 @@ pub struct CreateToken2022MintInstruction {
     pub uri: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct CreateTransferHookInstruction {
-    pub hook_program_id: Pubkey,
-    pub hook_name: String,
-    pub hook_description: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UpdateHookWhitelistInstruction {
     pub hook_program_id: Pubkey,
-    pub action: HookWhitelistAction, // Add or Remove
+    pub action: HookWhitelistAction,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HookWhitelistAction {
-    Add,
-    Remove,
+    Add = 0,
+    Remove = 1,
+}
+
+impl Default for HookWhitelistAction {
+    fn default() -> Self {
+        HookWhitelistAction::Add
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TokenTransferInstruction {
-    pub amount: u64,
+pub struct InitializeHookWhitelistInstruction {
+    pub authority: Pubkey,
 }
+
+
 
 // Note: TransferHookInstruction removed - use SPL Transfer Hook Interface instead
 // The SPL Transfer Hook Interface provides the Execute instruction with discriminator [105, 37, 101, 197, 75, 251, 102, 26]
-// We should use spl_transfer_hook_interface::Execute instead of creating our own
 
 impl AmmInstruction {
     /// Unpacks a byte buffer into a [AmmInstruction](enum.AmmInstruction.html).
@@ -712,31 +711,6 @@ impl AmmInstruction {
                 })
             }
             17 => {
-                // CreateTransferHook
-                let hook_program_id = array_ref![rest, 0, 32];
-                let rest = &rest[32..];
-                
-                // Parse strings with proper length handling
-                let (hook_name_len, rest) = Self::unpack_u8(rest)?;
-                if rest.len() < hook_name_len as usize {
-                    return Err(ProgramError::InvalidInstructionData.into());
-                }
-                let hook_name = String::from_utf8_lossy(&rest[..hook_name_len as usize]).to_string();
-                let rest = &rest[hook_name_len as usize..];
-                
-                let (hook_description_len, rest) = Self::unpack_u8(rest)?;
-                if rest.len() < hook_description_len as usize {
-                    return Err(ProgramError::InvalidInstructionData.into());
-                }
-                let hook_description = String::from_utf8_lossy(&rest[..hook_description_len as usize]).to_string();
-                
-                Self::CreateTransferHook(CreateTransferHookInstruction {
-                    hook_program_id: Pubkey::new_from_array(*hook_program_id),
-                    hook_name,
-                    hook_description,
-                })
-            }
-            18 => {
                 // UpdateHookWhitelist
                 let hook_program_id = array_ref![rest, 0, 32];
                 let rest = &rest[32..];
@@ -755,16 +729,7 @@ impl AmmInstruction {
                     action,
                 })
             }
-            19 => {
-                // TokenTransfer
-                let (amount, _rest) = Self::unpack_u64(rest)?;
-                Self::TokenTransfer(TokenTransferInstruction { amount })
-            }
-            20 => {
-                // TransferHook instruction removed - use SPL Transfer Hook Interface instead
-                return Err(ProgramError::InvalidInstructionData.into());
-            }
-            21 => {
+            18 => {
                 // InitializeExtraAccountMetaList
                 // Parse the length first (u32)
                 if rest.len() < 4 {
@@ -790,7 +755,7 @@ impl AmmInstruction {
                 
                 Self::InitializeExtraAccountMetaList(extra_accounts)
             }
-            22 => {
+            19 => {
                 // InitializeHookWhitelist
                 if rest.len() < 32 {
                     return Err(ProgramError::InvalidInstructionData.into());
@@ -800,7 +765,7 @@ impl AmmInstruction {
                     authority: Pubkey::new_from_array(*authority) 
                 }
             }
-            23 => {
+            20 => {
                 // UpdateWhitelistAuthority
                 if rest.len() < 32 {
                     return Err(ProgramError::InvalidInstructionData.into());
@@ -1095,36 +1060,22 @@ impl AmmInstruction {
                 buf.push(uri.len() as u8);
                 buf.extend_from_slice(uri.as_bytes());
             },
-            Self::CreateTransferHook(CreateTransferHookInstruction {
-                hook_program_id,
-                hook_name,
-                hook_description,
-            }) => {
-                buf.push(17);
-                buf.extend_from_slice(&hook_program_id.to_bytes());
-                buf.push(hook_name.len() as u8);
-                buf.extend_from_slice(hook_name.as_bytes());
-                buf.push(hook_description.len() as u8);
-                buf.extend_from_slice(hook_description.as_bytes());
-            },
+
             Self::UpdateHookWhitelist(UpdateHookWhitelistInstruction {
                 hook_program_id,
                 action,
             }) => {
-                buf.push(18);
+                buf.push(17);
                 buf.extend_from_slice(&hook_program_id.to_bytes());
                 buf.push(match action {
                     HookWhitelistAction::Add => 0,
                     HookWhitelistAction::Remove => 1,
                 });
             },
-            Self::TokenTransfer(TokenTransferInstruction { amount }) => {
-                buf.push(19);
-                buf.extend_from_slice(&amount.to_le_bytes());
-            },
+
             // TransferHook instruction removed - use SPL Transfer Hook Interface instead
             Self::InitializeExtraAccountMetaList(extra_accounts) => {
-                buf.push(21);
+                buf.push(18);
                 buf.extend_from_slice(&(extra_accounts.len() as u32).to_le_bytes());
                 for account in extra_accounts {
                     let account_bytes = bytemuck::bytes_of(account);
@@ -1132,11 +1083,11 @@ impl AmmInstruction {
                 }
             },
             Self::InitializeHookWhitelist { authority } => {
-                buf.push(22);
+                buf.push(19);
                 buf.extend_from_slice(&authority.to_bytes());
             },
             Self::UpdateWhitelistAuthority { new_authority } => {
-                buf.push(23);
+                buf.push(20);
                 buf.extend_from_slice(&new_authority.to_bytes());
             },
 
