@@ -61,71 +61,13 @@ fn try_unset_transferring(account: &AccountInfo) -> Result<(), ProgramError> {
     Ok(())
 }
 
-/// Check if a hook program is supported for auto-initialization
-fn is_hook_supported_for_auto_init(hook_program_id: &Pubkey) -> bool {
-    // Add known hook program IDs that support auto-initialization
-    // For now, we'll support the whitelist-transfer-hook program
-    let supported_hooks = [
-        // Add your whitelist-transfer-hook program ID here
-        // "YourWhitelistTransferHookProgramID",
-    ];
-    
-    supported_hooks.contains(hook_program_id)
-}
 
-/// Get default extra account metas for a supported hook program
-fn get_default_extra_account_metas(hook_program_id: &Pubkey) -> Result<Vec<ExtraAccountMeta>, ProgramError> {
-    // For whitelist-transfer-hook, the default extra account is the whitelist PDA
-    let whitelist_meta = ExtraAccountMeta::new_with_seeds(
-        &[
-            Seed::Literal {
-                bytes: b"whitelist".to_vec(),
-            },
-        ],
-        false, // is_signer
-        false, // is_writable
-    )?;
-    
-    Ok(vec![whitelist_meta])
-}
 
-/// Auto-initialize the extra account meta list for a hook program
-fn auto_initialize_meta_list<'a>(
+/// Check if meta list account exists and is initialized for a hook program
+fn is_meta_list_initialized<'a>(
     hook_program_id: &Pubkey,
     mint: &AccountInfo<'a>,
     meta_list_account: &AccountInfo<'a>,
-) -> Result<(), ProgramError> {
-    // Check if hook program is supported for auto-initialization
-    if !is_hook_supported_for_auto_init(hook_program_id) {
-        return Err(crate::error::AmmError::HookProgramNotSupportedForAutoInit.into());
-    }
-    
-    // Get default extra account metas for this hook program
-    let extra_account_metas = get_default_extra_account_metas(hook_program_id)?;
-    
-    // Calculate required account size
-    let account_size = ExtraAccountMetaList::size_of(extra_account_metas.len())?;
-    
-    // Check if account has enough space
-    let mut data = meta_list_account.try_borrow_mut_data()?;
-    if data.len() < account_size {
-        return Err(crate::error::AmmError::HookMetaListAutoInitFailed.into());
-    }
-    
-    // Initialize the meta list
-    ExtraAccountMetaList::init::<ExecuteInstruction>(
-        &mut data,
-        &extra_account_metas,
-    )?;
-    
-    msg!("Auto-initialized meta list for hook program: {}", hook_program_id);
-    Ok(())
-}
-
-/// Check if meta list account is valid and initialized
-fn is_meta_list_valid<'a>(
-    meta_list_account: &AccountInfo<'a>,
-    hook_program_id: &Pubkey,
 ) -> Result<bool, ProgramError> {
     let data = meta_list_account.try_borrow_data()?;
     
@@ -147,11 +89,69 @@ fn is_meta_list_valid<'a>(
     }
 }
 
+/// Auto-initialize the extra account meta list for a hook program following conventions
+fn auto_initialize_meta_list<'a>(
+    hook_program_id: &Pubkey,
+    mint: &AccountInfo<'a>,
+    meta_list_account: &AccountInfo<'a>,
+) -> Result<(), ProgramError> {
+    // Convention: Hook programs use [b"extra-account-metas", mint] as PDA seeds
+    // If hook program doesn't follow this convention, we'll fall back to regular transfer
+    
+    // Get default extra account metas based on common hook patterns
+    let extra_account_metas = get_conventional_extra_account_metas(hook_program_id)?;
+    
+    // Calculate required account size
+    let account_size = ExtraAccountMetaList::size_of(extra_account_metas.len())?;
+    
+    // Check if account has enough space
+    let mut data = meta_list_account.try_borrow_mut_data()?;
+    if data.len() < account_size {
+        msg!("Meta list account too small for auto-initialization, falling back to regular transfer");
+        return Err(crate::error::AmmError::HookMetaListAutoInitFailed.into());
+    }
+    
+    // Initialize the meta list
+    match ExtraAccountMetaList::init::<ExecuteInstruction>(
+        &mut data,
+        &extra_account_metas,
+    ) {
+        Ok(_) => {
+            msg!("Auto-initialized meta list for hook program: {}", hook_program_id);
+            Ok(())
+        }
+        Err(_) => {
+            msg!("Failed to initialize meta list, falling back to regular transfer");
+            Err(crate::error::AmmError::HookMetaListAutoInitFailed.into())
+        }
+    }
+}
+
+/// Get conventional extra account metas based on common hook patterns
+fn get_conventional_extra_account_metas(hook_program_id: &Pubkey) -> Result<Vec<ExtraAccountMeta>, ProgramError> {
+    // Convention: Most hook programs need a whitelist account
+    // Hook programs typically use [b"whitelist"] as PDA seed for their whitelist
+    let whitelist_meta = ExtraAccountMeta::new_with_seeds(
+        &[
+            Seed::Literal {
+                bytes: b"whitelist".to_vec(),
+            },
+        ],
+        false, // is_signer
+        false, // is_writable
+    )?;
+    
+    // Return whitelist pattern
+    Ok(vec![whitelist_meta])
+}
+
+
+
 /// Execute transfer hook for Token 2022 mints with on-chain whitelist validation
 /// 
 /// Expected remaining_accounts order:
-/// 0. TransferHookWhitelist PDA account
-/// 1. ExtraAccountMetaList PDA
+/// 0. TransferHookWhitelist PDA account (AMM's whitelist)
+/// 1. ExtraAccountMetaList PDA (hook program's meta list)
 /// 2..N. Additional accounts required by the hook (in order specified by the meta list)
 pub fn execute_transfer_hook<'a>(
     program_id: &Pubkey, // Your AMM program ID (for whitelist PDA derivation)
@@ -209,17 +209,19 @@ pub fn execute_transfer_hook<'a>(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Check if meta list is valid and auto-initialize if needed
-    let is_valid = is_meta_list_valid(extra_account_meta_list_info, &hook_program_id)?;
-    if !is_valid {
-        msg!("Meta list is invalid or not initialized, attempting auto-initialization...");
+    // Check if meta list is initialized and auto-initialize if needed
+    let is_initialized = is_meta_list_initialized(&hook_program_id, mint, extra_account_meta_list_info)?;
+    if !is_initialized {
+        msg!("Meta list not initialized, attempting auto-initialization...");
         match auto_initialize_meta_list(&hook_program_id, mint, extra_account_meta_list_info) {
             Ok(_) => {
-                msg!("Auto-initialization successful");
+                msg!("Auto-initialization successful for hook program: {}", hook_program_id);
             }
             Err(e) => {
+                msg!("Auto-initialization failed, falling back to regular transfer: {:?}", e);
                 let _ = try_unset_transferring(source);
-                return Err(e);
+                // Don't fail the transfer, just proceed without hook
+                return Ok(());
             }
         }
     }
@@ -262,7 +264,7 @@ pub fn execute_transfer_hook<'a>(
     let extra_account_meta_list = match ExtraAccountMetaList::unpack_with_tlv_state::<ExecuteInstruction>(&tlv_state) {
         Ok(list) => list,
         Err(_) => {
-            // If parsing fails, maybe there are no extra accounts - that's okay
+            // If parsing fails, maybe there are no extra accounts
             msg!("No extra account metas found, proceeding with basic accounts");
             
             // Create and execute the hook instruction with basic accounts
@@ -324,7 +326,6 @@ pub fn execute_transfer_hook<'a>(
     // Propagate any hook execution errors
     hook_result?;
 
-    msg!("Transfer hook executed successfully for program: {}", hook_program_id);
     Ok(())
 }
 

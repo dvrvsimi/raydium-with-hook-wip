@@ -33,8 +33,8 @@ pub fn process_initialize_hook_whitelist(
         return Err(ProgramError::MissingRequiredSignature);
     }
     
-    // Verify whitelist account PDA, bump is not used here
-    let (expected_whitelist_pda, _) = find_whitelist_pda(program_id);
+    // Verify whitelist account PDA and get bump
+    let (expected_whitelist_pda, bump) = find_whitelist_pda(program_id);
     if whitelist_account_info.key != &expected_whitelist_pda {
         return Err(ProgramError::InvalidAccountData);
     }
@@ -58,8 +58,7 @@ pub fn process_initialize_hook_whitelist(
         program_id,
     );
     
-    let seeds: &[&[u8]] = &[b"hook_whitelist"];
-    let signer_seeds = &[seeds];
+    let signer_seeds = &[&[b"hook_whitelist", &[bump]]];
 
     invoke_signed(
         &create_account_ix,

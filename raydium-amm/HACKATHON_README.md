@@ -189,3 +189,6 @@ Apache 2.0 - Same as original Raydium AMM
 
 **Built for the Token-2022 Hackathon** 🚀
 *Making real-world asset trading on-chain a reality* 
+
+new raydium program id: 3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag
+hook program id: CpHUaPzccsDg9YBvt6pAW4epUPDWek39RRYXMcWj6oU1
