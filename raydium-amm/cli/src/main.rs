@@ -7,7 +7,7 @@ use solana_sdk::{
     transaction::Transaction,
     instruction::Instruction,
 };
-
+use solana_sdk::system_instruction;
 use spl_associated_token_account::instruction as ata_instruction;
 use std::str::FromStr;
 use std::fs;
@@ -20,8 +20,8 @@ use spl_token_2022::{
 use spl_token::solana_program::program_option::COption;
 use spl_tlv_account_resolution::{
     account::ExtraAccountMeta,
+    seeds::Seed,
 };
-use bytemuck;
 
 
 
@@ -37,7 +37,7 @@ enum Commands {
     /// Initialize a Raydium AMM pool with Token-2022 support
     InitPool {
         /// AMM program ID
-        #[arg(long, default_value = "3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag")] // devnet
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")] // devnet
         amm_program_id: String,
         /// Coin mint address (Token-2022 supported)
         #[arg(long)]
@@ -64,7 +64,7 @@ enum Commands {
     /// Initialize whitelist for transfer hook
     InitWhitelist {
         /// AMM program ID
-        #[arg(long, default_value = "3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag")] // devnet
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")] // devnet
         amm_program_id: String,
         /// Path to payer keypair file
         #[arg(long, default_value = "~/.config/solana/id.json")]
@@ -73,7 +73,7 @@ enum Commands {
     /// Add hook to whitelist
     AddHookToWhitelist {
         /// AMM program ID
-        #[arg(long, default_value = "3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag")]
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
         amm_program_id: String,
         /// Hook program ID to add
         #[arg(long)]
@@ -85,7 +85,7 @@ enum Commands {
     /// Remove hook from whitelist
     RemoveHookFromWhitelist {
         /// AMM program ID
-        #[arg(long, default_value = "3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag")]
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
         amm_program_id: String,
         /// Hook program ID to remove
         #[arg(long)]
@@ -97,7 +97,7 @@ enum Commands {
     /// Get whitelist info
     GetWhitelistInfo {
         /// AMM program ID
-        #[arg(long, default_value = "3bTCD4MnbUsi6Ad1dqotiBQtiPbzKJbFmzkqQz8A1kag")]
+        #[arg(long, default_value = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8")]
         amm_program_id: String,
     },
     /// Create a Token-2022 mint with transfer hook
@@ -428,7 +428,7 @@ async fn init_amm_pool(
     let amm_account_size = 752; // Size of AmmInfo struct
     let amm_lamports = rpc_client.get_minimum_balance_for_rent_exemption(amm_account_size)?;
     
-    instructions.push(solana_system_interface::instruction::create_account(
+    instructions.push(system_instruction::create_account(
         &payer.pubkey(),
         &amm_pool_keypair.pubkey(),
         amm_lamports,
@@ -507,6 +507,19 @@ async fn init_whitelist(
     );
     println!("  Whitelist PDA: {}", whitelist_pda);
 
+    // Calculate account size for fixed-size HookWhitelist
+    let whitelist_size = 32 + 4 + (32 * 32); // authority + hook_count + hooks array (32 hooks)
+    let whitelist_lamports = rpc_client.get_minimum_balance_for_rent_exemption(whitelist_size)?;
+
+    // Create whitelist account
+    let create_account_instruction = system_instruction::create_account(
+        &payer.pubkey(),
+        &whitelist_pda,
+        whitelist_lamports,
+        whitelist_size as u64,
+        &amm_program_pubkey,
+    );
+
     // Create initialize whitelist instruction using actual instruction builder
     let init_instruction = create_initialize_whitelist_instruction(
         &amm_program_pubkey,
@@ -515,7 +528,7 @@ async fn init_whitelist(
     )?;
 
     let transaction = Transaction::new_signed_with_payer(
-        &[init_instruction],
+        &[create_account_instruction, init_instruction],
         Some(&payer.pubkey()),
         &[payer],
         rpc_client.get_latest_blockhash()?,
@@ -664,7 +677,7 @@ async fn create_hook_mint(
     let mut instructions = vec![];
     
     // Create mint account
-    instructions.push(solana_system_interface::instruction::create_account(
+    instructions.push(system_instruction::create_account(
         &payer.pubkey(),
         &mint_keypair.pubkey(),
         mint_lamports,
@@ -775,9 +788,13 @@ async fn init_hook_meta_list(
         )?
     ];
     
-    // Create instruction to call the hook program's InitializeExtraAccountMetaList instruction
-    let instruction = create_hook_initialize_meta_list_instruction(
-        &hook_program_pubkey,
+    // Use the Raydium AMM program to initialize the extra account meta list
+    let amm_program_id = "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8"; // devnet
+    let amm_program_pubkey = Pubkey::from_str(amm_program_id)?;
+    
+    // Create instruction using the actual Raydium AMM instruction
+    let instruction = create_initialize_extra_account_meta_list_instruction(
+        &amm_program_pubkey,
         &meta_list_pda,
         &mint_pubkey,
         &payer.pubkey(),
@@ -816,8 +833,7 @@ async fn init_hook_whitelist(
         &hook_program_pubkey,
     );
     
-    // Create instruction to call the hook program's initialize whitelist instruction
-    let instruction = create_hook_initialize_whitelist_instruction(
+    let instruction = create_initialize_hook_whitelist_instruction(
         &hook_program_pubkey,
         &payer.pubkey(),
         &whitelist_pda,
@@ -853,12 +869,12 @@ async fn add_to_hook_whitelist(
         &hook_program_pubkey,
     );
     
-    // Create instruction to call the hook program's add to whitelist instruction
-    let instruction = create_hook_add_to_whitelist_instruction(
+    let instruction = create_update_hook_whitelist_instruction(
         &hook_program_pubkey,
         &payer.pubkey(),
         &whitelist_pda,
         &user_pubkey,
+        true, // Add user
     )?;
     
     let transaction = Transaction::new_signed_with_payer(
@@ -942,26 +958,15 @@ async fn test_hook_transfer(
 
 // Helper functions for transfer hook instructions
 
-fn create_hook_initialize_meta_list_instruction(
-    hook_program_id: &Pubkey,
+fn create_initialize_extra_account_meta_list_instruction(
+    program_id: &Pubkey,
     meta_list_pda: &Pubkey,
     mint: &Pubkey,
     authority: &Pubkey,
     extra_account_metas: Vec<ExtraAccountMeta>,
 ) -> Result<Instruction> {
-    // Create instruction to call the hook program's InitializeExtraAccountMetaList instruction
-    // This uses the SPL Transfer Hook Interface discriminator
-    let mut data = vec![
-        // SPL Transfer Hook Interface discriminator for InitializeExtraAccountMetaList
-        43, 34, 13, 49, 167, 88, 235, 235
-    ];
-    
-    // Add the extra account metas using proper serialization
-    for meta in extra_account_metas {
-        // Use bytemuck to serialize ExtraAccountMeta (which implements Pod)
-        let meta_bytes = bytemuck::bytes_of(&meta);
-        data.extend_from_slice(meta_bytes);
-    }
+    // Create the actual Raydium AMM InitializeExtraAccountMetaList instruction
+    let instruction_data = AmmInstruction::InitializeExtraAccountMetaList(extra_account_metas);
     
     let accounts = vec![
         solana_sdk::instruction::AccountMeta::new(*meta_list_pda, false),
@@ -971,20 +976,18 @@ fn create_hook_initialize_meta_list_instruction(
     ];
 
     Ok(Instruction {
-        program_id: *hook_program_id,
+        program_id: *program_id,
         accounts,
-        data,
+        data: instruction_data.pack()?,
     })
 }
 
-fn create_hook_initialize_whitelist_instruction(
-    hook_program_id: &Pubkey,
+fn create_initialize_hook_whitelist_instruction(
+    program_id: &Pubkey,
     authority: &Pubkey,
     whitelist_pda: &Pubkey,
 ) -> Result<Instruction> {
-    // Create instruction to call the hook program's initialize whitelist instruction
-    // This uses the hook program's custom instruction format
-    let mut data = vec![0]; // Initialize whitelist instruction discriminator
+    let mut data = vec![0]; // Initialize whitelist instruction
     data.extend_from_slice(&authority.to_bytes());
     
     let accounts = vec![
@@ -994,21 +997,20 @@ fn create_hook_initialize_whitelist_instruction(
     ];
 
     Ok(Instruction {
-        program_id: *hook_program_id,
+        program_id: *program_id,
         accounts,
         data,
     })
 }
 
-fn create_hook_add_to_whitelist_instruction(
-    hook_program_id: &Pubkey,
+fn create_update_hook_whitelist_instruction(
+    program_id: &Pubkey,
     authority: &Pubkey,
     whitelist_pda: &Pubkey,
     user: &Pubkey,
+    add: bool,
 ) -> Result<Instruction> {
-    // Create instruction to call the hook program's add to whitelist instruction
-    // This uses the hook program's custom instruction format
-    let mut data = vec![1]; // Add to whitelist instruction discriminator
+    let mut data = vec![if add { 1 } else { 2 }]; // Add/Remove instruction
     data.extend_from_slice(&user.to_bytes());
     
     let accounts = vec![
@@ -1017,7 +1019,7 @@ fn create_hook_add_to_whitelist_instruction(
     ];
 
     Ok(Instruction {
-        program_id: *hook_program_id,
+        program_id: *program_id,
         accounts,
         data,
     })
@@ -1030,7 +1032,7 @@ fn create_initialize_whitelist_instruction(
     authority: &Pubkey,
     whitelist_pda: &Pubkey,
 ) -> Result<Instruction> {
-    // Use instruction enum from crate
+    // Use the actual instruction enum from your crate
     let instruction_data = AmmInstruction::InitializeHookWhitelist { 
         authority: *authority 
     };

@@ -110,6 +110,6 @@ solana_security_txt::security_txt! {
 }
 
 #[cfg(feature = "devnet")]
-solana_program::declare_id!("AP4xm2etbcxNMqDdWBVe3dPdfPYAXQkh88sfxAAaiiMj");
+solana_program::declare_id!("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8");
 #[cfg(not(feature = "devnet"))]
 solana_program::declare_id!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"); // TODO: change this when you deploy this version
